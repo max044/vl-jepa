@@ -1,8 +1,7 @@
 # VL-JEPA: Simplified Video-Language Alignment
 
-A modern, simplified implementation of the Video-Language Joint Embedding
-Predictive Architecture (VL-JEPA) for **Temporal Moment Retrieval** (Temporal
-Grounding).
+A simplified implementation of the Video-Language Joint Embedding Predictive
+Architecture (VL-JEPA) for **Temporal Moment Retrieval** (Temporal Grounding).
 
 This project uses **V-JEPA 2** for video understanding and **Qwen 2.5 0.5B** as
 a predictor to align video features with language queries in a high-dimensional
@@ -93,6 +92,22 @@ Unlike standard VLM (Visual-Language Models) that use generative heads, this
 VL-JEPA implementation focuses on **embedding alignment**. This makes it an
 order of magnitude faster for retrieval tasks (search) as embeddings can be
 pre-computed and indexed using vector databases (Faiss, Milvus, Chroma).
+
+## 📚 References
+
+This implementation is based on the official VL-JEPA paper:
+
+```bibtex
+@misc{chen2026vljepajointembeddingpredictive,
+      title={VL-JEPA: Joint Embedding Predictive Architecture for Vision-language}, 
+      author={Delong Chen and Mustafa Shukor and Theo Moutakanni and Willy Chung and Jade Yu and Tejaswi Kasarla and Yejin Bang and Allen Bolourchi and Yann LeCun and Pascale Fung},
+      year={2026},
+      eprint={2512.10942},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2512.10942}, 
+}
+```
 
 ## 📄 License
 
