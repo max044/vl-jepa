@@ -27,7 +27,7 @@ This project uses `uv` for lightning-fast dependency management.
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/vl-jepa.git
+git clone https://github.com/max044/vl-jepa.git
 cd vl-jepa
 
 # Create environment and install dependencies
@@ -38,11 +38,10 @@ uv sync
 
 The model is trained on the **Charades-STA** dataset for temporal grounding.
 
-1. **Videos**: Download [Charades v1](https://allenai.org/datasets/charades) and
-   place them in `data/Charades_v1_480`.
-2. **Annotations**: Running the training script will attempt to download them
-   automatically from HuggingFace (`lmms-lab/charades_sta`), or you can use
-   `download_annotations.py`.
+1. **Videos**: Download
+   [Charades v1](https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip)
+   and place them in `data/Charades_v1_480`.
+2. **Annotations**: Use `download_annotations.py` to download the annotations.
 
 Structure:
 
