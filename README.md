@@ -91,6 +91,10 @@ nano .env  # Set WANDB_API_KEY (get it at https://wandb.ai/authorize)
 wget -P data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip
 unzip data/Charades_v1_480.zip -d data/
 
+or
+
+uv run hf download max044/Charades_v1_480 --local-dir data/Charades_v1_480 --repo-type dataset
+
 # 4. Launch training
 bash scripts/train_cloud.sh
 ```

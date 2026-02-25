@@ -20,7 +20,18 @@ BATCH_SIZE="${BATCH_SIZE:-16}"
 LR="${LR:-3e-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 WANDB_PROJECT="${WANDB_PROJECT:-vl-jepa}"
+WANDB_ID="${WANDB_ID:-}"
+CHECKPOINT="${CHECKPOINT:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+# Construction des arguments de resume si présents
+RESUME_ARGS=""
+if [ -n "$WANDB_ID" ]; then
+    RESUME_ARGS="$RESUME_ARGS --wandb-id $WANDB_ID"
+fi
+if [ -n "$CHECKPOINT" ]; then
+    RESUME_ARGS="$RESUME_ARGS --checkpoint $CHECKPOINT"
+fi
 
 # ── Pre-flight checks ──────────────────────────────────────────
 echo "╔══════════════════════════════════════════╗"
@@ -68,6 +79,7 @@ TRAIN_CMD="uv run python train.py \
     --lr $LR \
     --num-workers $NUM_WORKERS \
     --wandb-project $WANDB_PROJECT \
+    $RESUME_ARGS \
     $EXTRA_ARGS"
 
 echo "▸ Command: $TRAIN_CMD"

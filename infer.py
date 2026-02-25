@@ -9,8 +9,15 @@ Usage:
 """
 
 import argparse
+import os
 import torch
 import torch.nn.functional as F
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from vljepa.config import Config
 from vljepa.models import VLJepa
@@ -31,6 +38,8 @@ def parse_args():
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--window-sizes", type=float, nargs="+", default=None)
     parser.add_argument("--stride", type=float, default=None)
+    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B artifact downloading")
+    parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
     return parser.parse_args()
 
 
@@ -157,12 +166,37 @@ def main():
     print(f"Video: {args.video}")
     print()
 
+    # ── W&B Setup ──────────────────────────────────────────
+    use_wandb = HAS_WANDB and not args.no_wandb
+    if use_wandb:
+        wandb.init(project=args.wandb_project, job_type="inference")
+
     # Load model
     print("Loading model...")
     model = VLJepa(config)
 
+    checkpoint_path = args.checkpoint
+    # Check if it's a W&B artifact path
+    if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
+        if use_wandb:
+            print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
+            try:
+                artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+                artifact_dir = artifact.download()
+                checkpoint_path = os.path.join(artifact_dir, "best.pth")
+                if not os.path.exists(checkpoint_path):
+                    pths = [f for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                    if pths:
+                        checkpoint_path = os.path.join(artifact_dir, pths[0])
+            except Exception as e:
+                print(f"❌ Failed to download artifact: {e}")
+                return
+        else:
+            print("⚠ W&B is disabled, cannot download artifact.")
+            return
+
     # Load trained weights
-    ckpt = torch.load(args.checkpoint, map_location=config.device, weights_only=True)
+    ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
 

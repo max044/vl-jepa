@@ -75,7 +75,7 @@ echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
 # On télécharge tout dans le dossier data/
 # Les fichiers .txt iront dans data/
 # Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
-uv run huggingface-cli download "$HF_DATASET_ID" --local-dir data --repo-type dataset
+uv run hf download "$HF_DATASET_ID" --local-dir data --repo-type dataset
 
 echo "✓ Dataset ready in data/"
 
