@@ -58,7 +58,7 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
 
 
-def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scaler=None):
+def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, global_step, scaler=None):
     """Run one training epoch."""
     model.predictor.train()
     model.y_encoder.projection.train()
@@ -111,6 +111,7 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scal
             torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), config.grad_clip)
             optimizer.step()
 
+        # Update scheduler after optimizer step
         scheduler.step()
 
         total_loss += metrics["loss/total"]
@@ -400,7 +401,7 @@ def main():
         model.eval()
         
         result = train_one_epoch(
-            model, train_loader, optimizer, scheduler, config, epoch, scaler
+            model, train_loader, optimizer, scheduler, config, epoch, global_step, scaler
         )
 
         global_step += result["num_batches"]
