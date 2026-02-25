@@ -51,22 +51,34 @@ else
     echo "   cp .env.example .env && nano .env"
 fi
 
-# ── 6. W&B login ───────────────────────────────────────────────
+# ── 6. Logins (W&B, HF) ──────────────────────────────────────────
 if [ -n "${WANDB_API_KEY:-}" ]; then
     echo "▸ Logging into W&B..."
     uv run wandb login "$WANDB_API_KEY" 2>/dev/null || true
     echo "  ✓ W&B configured"
-else
-    echo "⚠  WANDB_API_KEY not set. Set it in .env to enable experiment tracking."
 fi
 
-# ── 7. Download annotations (if not present) ───────────────────
-if [ ! -f data/charades_sta_train.txt ]; then
+if [ -n "${HF_TOKEN:-}" ]; then
+    echo "▸ Logging into Hugging Face..."
+    uv run huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
+    echo "  ✓ HF configured"
+fi
+
+# ── 7. Download Data (HF vs Legacy) ─────────────────────────────
+if [ -n "${HF_DATASET_ID:-}" ]; then
     echo ""
-    echo "▸ Downloading Charades-STA annotations..."
-    uv run python download_annotations.py
+    echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
+    # --local-dir maps HF files to our data/ folder
+    uv run huggingface-cli download "$HF_DATASET_ID" --local-dir data --repo-type dataset
 else
-    echo "▸ Annotations already present."
+    # Legacy: Download annotations if not present
+    if [ ! -f data/charades_sta_train.txt ]; then
+        echo ""
+        echo "▸ Downloading Charades-STA annotations..."
+        uv run python download_annotations.py
+    else
+        echo "▸ Annotations already present."
+    fi
 fi
 
 # ── 8. Check for video data ────────────────────────────────────

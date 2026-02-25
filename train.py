@@ -147,6 +147,61 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scal
     }
 
 
+@torch.no_grad()
+def validate_one_epoch(model, dataloader, config):
+    """Run one validation epoch."""
+    model.predictor.eval()
+    model.y_encoder.projection.eval()
+
+    total_loss = 0.0
+    total_infonce = 0.0
+    num_batches = 0
+    start_time = time.time()
+
+    for batch_idx, batch in enumerate(dataloader):
+        if batch is None:
+            continue
+
+        # Preprocess frames using CLIP processor
+        pixel_values = model.x_encoder.preprocess_frames(
+            batch["frames"], device=config.device
+        )
+
+        # Tokenize queries
+        query_tokens = model.query_encoder.tokenize(
+            batch["queries"], device=config.device
+        )
+
+        with torch.autocast(device_type="cuda", enabled=config.device == "cuda"):
+            sy_hat, sy = model(
+                pixel_values,
+                query_tokens["input_ids"],
+                query_tokens["attention_mask"],
+                batch["captions"],
+            )
+
+            loss, metrics = vl_jepa_loss(
+                sy_hat, sy,
+                temperature=config.temperature,
+                sigreg_weight=config.sigreg_weight,
+            )
+
+        total_loss += metrics["loss/total"]
+        total_infonce += metrics["loss/infonce"]
+        num_batches += 1
+
+    avg_loss = total_loss / max(num_batches, 1)
+    avg_infonce = total_infonce / max(num_batches, 1)
+    elapsed = time.time() - start_time
+
+    return {
+        "avg_loss": avg_loss,
+        "avg_infonce": avg_infonce,
+        "elapsed": elapsed,
+        "num_batches": num_batches,
+    }
+
+
 def save_checkpoint(model, optimizer, epoch, loss, path):
     """Save a training checkpoint."""
     torch.save({
@@ -255,6 +310,24 @@ def main():
         pin_memory=config.device == "cuda",
     )
 
+    # Validation Dataset
+    print("Loading test/val dataset...")
+    val_dataset = CharadesSTADataset(
+        config.anno_test, config.videos_dir, config, split="test"
+    )
+    if config.val_samples and not config.debug:
+        val_dataset.samples = val_dataset.samples[:config.val_samples]
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        collate_fn=collate_fn,
+        drop_last=False,
+        pin_memory=config.device == "cuda",
+    )
+
     # Scheduler
     total_steps = len(train_loader) * config.epochs
     scheduler = get_lr_scheduler(optimizer, config.warmup_steps, total_steps)
@@ -302,6 +375,22 @@ def main():
                 "epoch/lr": optimizer.param_groups[0]["lr"],
             }, step=global_step)
 
+        # ── Validation Phase ────────────────────────────────
+        val_result = None
+        if (epoch + 1) % config.val_every == 0 or epoch == config.epochs - 1:
+            print(f"  🔍 Validating...")
+            val_result = validate_one_epoch(model, val_loader, config)
+            print(
+                f"  → Val loss: {val_result['avg_loss']:.4f} | "
+                f"Val InfoNCE: {val_result['avg_infonce']:.4f}"
+            )
+            
+            if use_wandb:
+                wandb.log({
+                    "val/loss": val_result["avg_loss"],
+                    "val/infonce": val_result["avg_infonce"],
+                }, step=global_step)
+
         # Save checkpoints
         if (epoch + 1) % config.save_every == 0 or epoch == config.epochs - 1:
             ckpt_path = os.path.join(config.checkpoint_dir, "last.pth")
@@ -311,13 +400,21 @@ def main():
                 "epoch": epoch + 1, "loss": result["avg_loss"]
             })
 
-        if result["avg_loss"] < best_loss:
-            best_loss = result["avg_loss"]
+        # Update best based on validation if available
+        if val_result:
+            current_best_metric = val_result["avg_loss"]
+            metric_name = "val/loss"
+        else:
+            current_best_metric = result["avg_loss"]
+            metric_name = "train/loss"
+
+        if current_best_metric < best_loss:
+            best_loss = current_best_metric
             best_path = os.path.join(config.checkpoint_dir, "best.pth")
-            save_checkpoint(model, optimizer, epoch, result["avg_loss"], best_path)
-            print(f"  ⭐ New best! Saved: {best_path}")
+            save_checkpoint(model, optimizer, epoch, current_best_metric, best_path)
+            print(f"  ⭐ New best! ({metric_name}) Saved: {best_path}")
             log_artifact(best_path, "vl-jepa-best", "model", {
-                "epoch": epoch + 1, "loss": best_loss
+                "epoch": epoch + 1, metric_name: best_loss
             })
 
         print()

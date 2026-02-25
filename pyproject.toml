@@ -6,18 +6,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "torch>=2.1.0",
-    "transformers>=4.40.0",   # Need recent transformers for Qwen2
+    "transformers>=4.40.0", # Need recent transformers for Qwen2
     "sentence-transformers>=2.3.0",
     "opencv-python>=4.8.0",
-    "numpy>=1.24.0",
+    "numpy>=2.1.0",
     "tqdm>=4.65.0",
     "requests>=2.31.0",
     "datasets>=2.16.0",
     "pillow>=10.0.0",
     "peft>=0.10.0",
     "accelerate>=0.28.0",
-    "bitsandbytes>=0.43.0",    # Optional for quantization if needed
-    "wandb>=0.16.0",           # Experiment tracking & model versioning
+    "bitsandbytes>=0.43.0", # Optional for quantization if needed
+    "wandb>=0.16.0", # Experiment tracking & model versioning
+    "vastai>=0.2.8",
+    "pandas>=2.2.0",
+    "huggingface-hub>=1.4.1",
 ]
 
 [build-system]
