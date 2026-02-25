@@ -392,7 +392,12 @@ def main():
     best_loss = float("inf")
     print(f"Starting training ({len(train_loader)} batches/epoch)...\n")
 
-    global_step = current_global_step
+    # Sync global_step with W&B if resuming
+    if use_wandb and wandb.run and wandb.run.step > 0:
+        global_step = wandb.run.step
+        print(f"📊 W&B Synced: Starting from global step {global_step}")
+    else:
+        global_step = current_global_step
 
     for epoch in range(start_epoch, config.epochs):
         print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
