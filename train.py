@@ -7,14 +7,22 @@ Usage:
     python train.py                          # Default settings
     python train.py --debug --epochs 2       # Quick sanity check
     python train.py --device cuda --epochs 20 --batch-size 16  # Full training on GPU
+    python train.py --device cuda --wandb-project vl-jepa      # With W&B tracking
 """
 
 import argparse
+from dataclasses import asdict
 import os
 import time
 
 import torch
 from torch.utils.data import DataLoader
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
@@ -31,6 +39,11 @@ def parse_args():
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--num-workers", type=int, default=None)
+    # W&B arguments
+    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
+    parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="W&B team/entity")
+    parser.add_argument("--wandb-run-name", type=str, default=None, help="W&B run name")
     return parser.parse_args()
 
 
@@ -103,6 +116,14 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scal
         total_infonce += metrics["loss/infonce"]
         num_batches += 1
 
+        # ── W&B: log per-step metrics ───────────────────────
+        if HAS_WANDB and wandb.run:
+            wandb.log({
+                "train/loss": metrics["loss/total"],
+                "train/infonce": metrics["loss/infonce"],
+                "train/lr": optimizer.param_groups[0]["lr"],
+            })
+
         if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
             lr = optimizer.param_groups[0]["lr"]
             elapsed = time.time() - start_time
@@ -137,6 +158,19 @@ def save_checkpoint(model, optimizer, epoch, loss, path):
     }, path)
 
 
+def log_artifact(path, name, artifact_type, metadata=None):
+    """Upload a checkpoint as a W&B Artifact for model versioning."""
+    if not (HAS_WANDB and wandb.run):
+        return
+    artifact = wandb.Artifact(
+        name=name,
+        type=artifact_type,
+        metadata=metadata or {},
+    )
+    artifact.add_file(path)
+    wandb.log_artifact(artifact)
+
+
 def load_checkpoint(model, optimizer, path, device):
     """Load checkpoint and return start epoch."""
     ckpt = torch.load(path, map_location=device, weights_only=True)
@@ -165,6 +199,20 @@ def main():
         config.debug = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+
+    # ── W&B Init ────────────────────────────────────────────
+    use_wandb = HAS_WANDB and not args.no_wandb
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.wandb_run_name,
+            config=asdict(config),
+            tags=["train", config.device] + (["debug"] if config.debug else []),
+        )
+        print(f"W&B run: {wandb.run.url}")
+    elif not HAS_WANDB and not args.no_wandb:
+        print("Warning: wandb not installed. Install with `pip install wandb` for experiment tracking.")
 
     print(f"Device: {config.device}")
     print(f"Debug: {config.debug}")
@@ -223,6 +271,8 @@ def main():
     best_loss = float("inf")
     print(f"Starting training ({len(train_loader)} batches/epoch)...\n")
 
+    global_step = 0
+
     for epoch in range(start_epoch, config.epochs):
         print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
 
@@ -233,6 +283,8 @@ def main():
             model, train_loader, optimizer, scheduler, config, epoch, scaler
         )
 
+        global_step += result["num_batches"]
+
         print(
             f"  → Avg loss: {result['avg_loss']:.4f} | "
             f"InfoNCE: {result['avg_infonce']:.4f} | "
@@ -240,21 +292,43 @@ def main():
             f"Batches: {result['num_batches']}"
         )
 
+        # ── W&B: log epoch metrics ──────────────────────────
+        if use_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+                "epoch/avg_loss": result["avg_loss"],
+                "epoch/avg_infonce": result["avg_infonce"],
+                "epoch/time_s": result["elapsed"],
+                "epoch/lr": optimizer.param_groups[0]["lr"],
+            }, step=global_step)
+
         # Save checkpoints
         if (epoch + 1) % config.save_every == 0 or epoch == config.epochs - 1:
             ckpt_path = os.path.join(config.checkpoint_dir, "last.pth")
             save_checkpoint(model, optimizer, epoch, result["avg_loss"], ckpt_path)
             print(f"  💾 Saved checkpoint: {ckpt_path}")
+            log_artifact(ckpt_path, "vl-jepa-last", "model", {
+                "epoch": epoch + 1, "loss": result["avg_loss"]
+            })
 
         if result["avg_loss"] < best_loss:
             best_loss = result["avg_loss"]
             best_path = os.path.join(config.checkpoint_dir, "best.pth")
             save_checkpoint(model, optimizer, epoch, result["avg_loss"], best_path)
             print(f"  ⭐ New best! Saved: {best_path}")
+            log_artifact(best_path, "vl-jepa-best", "model", {
+                "epoch": epoch + 1, "loss": best_loss
+            })
 
         print()
 
     print(f"Training complete! Best loss: {best_loss:.4f}")
+
+    # ── W&B: finalize ──────────────────────────────────────
+    if use_wandb:
+        wandb.summary["best_loss"] = best_loss
+        wandb.summary["total_epochs"] = config.epochs
+        wandb.finish()
 
 
 if __name__ == "__main__":

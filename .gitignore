@@ -13,3 +13,7 @@ wheels/
 data/*
 *.log
 checkpoints/*
+
+# Environment & W&B
+.env
+wandb/

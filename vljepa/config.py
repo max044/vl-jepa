@@ -19,8 +19,8 @@ class Config:
     # Predictor: Qwen 2.5 0.5B (LoRA)
     predictor_model: str = "Qwen/Qwen2.5-0.5B"
     use_lora: bool = True
-    lora_r: int = 16
-    lora_alpha: int = 32
+    lora_r: int = 64
+    lora_alpha: int = 128
     lora_dropout: float = 0.05
     lora_target_modules: list[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
 

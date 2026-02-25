@@ -9,11 +9,18 @@ Evaluates moment retrieval performance using standard metrics:
 Usage:
     python eval.py --checkpoint checkpoints/best.pth
     python eval.py --checkpoint checkpoints/best.pth --device cuda
+    python eval.py --checkpoint checkpoints/best.pth --wandb-project vl-jepa
 """
 
 import argparse
 import torch
 from tqdm import tqdm
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
 
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset
@@ -28,6 +35,10 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--max-samples", type=int, default=None, help="Limit eval samples")
+    # W&B arguments
+    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
+    parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
+    parser.add_argument("--wandb-run-path", type=str, default=None, help="Attach to existing W&B run (entity/project/run_id)")
     return parser.parse_args()
 
 
@@ -37,6 +48,26 @@ def main():
     config = Config()
     if args.device:
         config.device = args.device
+
+    # ── W&B Init ──────────────────────────────────────────
+    use_wandb = HAS_WANDB and not args.no_wandb
+    if use_wandb:
+        if args.wandb_run_path:
+            # Resume/attach to existing training run
+            wandb.init(
+                project=args.wandb_project,
+                id=args.wandb_run_path.split("/")[-1],
+                resume="allow",
+                tags=["eval"],
+            )
+        else:
+            wandb.init(
+                project=args.wandb_project,
+                job_type="eval",
+                config={"checkpoint": args.checkpoint, "device": config.device},
+                tags=["eval"],
+            )
+        print(f"W&B run: {wandb.run.url}")
 
     print(f"Device: {config.device}")
     print()
@@ -110,14 +141,26 @@ def main():
     print()
 
     if total > 0:
+        eval_metrics = {}
         for thresh, count in sorted(recalls.items()):
             r = count / total * 100
             print(f"  R@1 IoU={thresh:.1f}:  {r:6.2f}%  ({count}/{total})")
+            eval_metrics[f"eval/R@1_IoU={thresh:.1f}"] = r
 
         mean_iou = sum(ious) / len(ious) * 100
         print(f"\n  mIoU:          {mean_iou:6.2f}%")
+        eval_metrics["eval/mIoU"] = mean_iou
+
+        # ── W&B: log eval metrics ────────────────────────
+        if use_wandb:
+            wandb.log(eval_metrics)
+            for k, v in eval_metrics.items():
+                wandb.summary[k] = v
+            wandb.finish()
     else:
         print("  No samples evaluated successfully.")
+        if use_wandb:
+            wandb.finish()
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ data/
 Start training with default hyperparameters:
 
 ```bash
-# Regular training
+# Regular training (local, MPS/CPU)
 uv run train.py
 
 # Debug mode (small subset, only 2 epochs)
@@ -70,6 +70,60 @@ uv run train.py --debug --device mps
 - **LoRA Tuning**: Only 0.2% of the predictor parameters (Qwen) are trained,
   making it extremely memory-efficient.
 - **MPS Support**: Optimized for Mac M1/M2/M3 chips.
+- **W&B Integration**: Full experiment tracking with model versioning.
+
+## ☁️ Cloud GPU Training
+
+Train on GPU with [Vast.ai](https://vast.ai/) (~$0.50–2/h for A100/H100).
+
+### Quick Start
+
+```bash
+# 1. On the cloud instance — bootstrap
+curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
+
+# 2. Configure W&B
+cd ~/vl-jepa
+cp .env.example .env
+nano .env  # Set WANDB_API_KEY (get it at https://wandb.ai/authorize)
+
+# 3. Download videos
+wget -P data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip
+unzip data/Charades_v1_480.zip -d data/
+
+# 4. Launch training
+bash scripts/train_cloud.sh
+```
+
+### W&B Experiment Tracking
+
+All training runs are tracked on [Weights & Biases](https://wandb.ai/):
+
+- **Metrics**: loss, InfoNCE, learning rate (per step + per epoch)
+- **System**: GPU utilization, memory usage (automatic)
+- **Model versioning**: checkpoints uploaded as W&B Artifacts (`vl-jepa-best`,
+  `vl-jepa-last`) — every version is preserved and downloadable
+
+```bash
+# Train with W&B (default)
+uv run train.py --device cuda --wandb-project vl-jepa
+
+# Train without W&B
+uv run train.py --device cuda --no-wandb
+
+# Custom W&B run name
+uv run train.py --device cuda --wandb-run-name "exp-lr3e4-bs16"
+```
+
+### Environment Variables
+
+| Variable        | Description                                          | Required     |
+| --------------- | ---------------------------------------------------- | ------------ |
+| `WANDB_API_KEY` | W&B API key ([get here](https://wandb.ai/authorize)) | For tracking |
+| `WANDB_PROJECT` | W&B project name (default: `vl-jepa`)                | No           |
+| `WANDB_ENTITY`  | W&B team/organization                                | No           |
+| `EPOCHS`        | Override epoch count                                 | No           |
+| `BATCH_SIZE`    | Override batch size                                  | No           |
 
 ## 🔍 Inference (Moment Retrieval)
 

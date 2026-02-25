@@ -17,6 +17,7 @@ dependencies = [
     "peft>=0.10.0",
     "accelerate>=0.28.0",
     "bitsandbytes>=0.43.0",    # Optional for quantization if needed
+    "wandb>=0.16.0",           # Experiment tracking & model versioning
 ]
 
 [build-system]
