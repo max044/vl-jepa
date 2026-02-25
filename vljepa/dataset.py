@@ -8,6 +8,12 @@ from torch.utils.data import Dataset
 from vljepa.config import Config
 from vljepa.utils import load_video_frames
 
+try:
+    from huggingface_hub import hf_hub_download
+    HAS_HF_HUB = True
+except ImportError:
+    HAS_HF_HUB = False
+
 
 class CharadesSTADataset(Dataset):
     """Dataset for Charades-STA temporal grounding.
@@ -73,7 +79,9 @@ class CharadesSTADataset(Dataset):
                 end = float(meta[2])
 
                 video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
-                if os.path.exists(video_path):
+                
+                # If streaming/lazy loading is enabled, we add even if not local
+                if os.path.exists(video_path) or self.config.hf_dataset_id:
                     self.samples.append({
                         "video_path": video_path,
                         "video_id": video_id,
@@ -115,10 +123,29 @@ class CharadesSTADataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict | None:
         sample = self.samples[idx]
+        video_path = sample["video_path"]
+
+        # ── Lazy Loading from HF ────────────────────────────
+        if not os.path.exists(video_path) and self.config.hf_dataset_id:
+            if HAS_HF_HUB:
+                try:
+                    # Download only the specific file needed
+                    video_path = hf_hub_download(
+                        repo_id=self.config.hf_dataset_id,
+                        filename=f"{sample['video_id']}.mp4",
+                        repo_type="dataset",
+                        local_dir=self.videos_dir, # Cache it in the videos dir
+                    )
+                except Exception as e:
+                    print(f"Error downloading {sample['video_id']}: {e}")
+                    return None
+            else:
+                print("Error: huggingface_hub not installed, cannot lazy load.")
+                return None
 
         # Load frames from the annotated temporal segment
         frames = load_video_frames(
-            sample["video_path"],
+            video_path,
             start_sec=sample["start"],
             end_sec=sample["end"],
             num_frames=self.config.num_frames,

@@ -54,6 +54,7 @@ class Config:
     videos_dir: str = "./data/Charades_v1_480"
     anno_train: str = "./data/charades_sta_train.txt"
     anno_test: str = "./data/charades_sta_test.txt"
+    hf_dataset_id: str = "max044/Charades_v1_480"
 
     # ── Checkpoints ─────────────────────────────────────────
     checkpoint_dir: str = "./checkpoints"

@@ -48,14 +48,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_lr_scheduler(optimizer, warmup_steps, total_steps):
+def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1):
     """Cosine schedule with linear warmup."""
     def lr_lambda(step):
         if step < warmup_steps:
             return step / max(warmup_steps, 1)
         progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
         return max(0.1, 0.5 * (1 + __import__("math").cos(__import__("math").pi * progress)))
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
 
 
 def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scaler=None):
@@ -123,7 +123,7 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, scal
                 "train/loss": metrics["loss/total"],
                 "train/infonce": metrics["loss/infonce"],
                 "train/lr": optimizer.param_groups[0]["lr"],
-            })
+            }, step=global_step + batch_idx)
 
         if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
             lr = optimizer.param_groups[0]["lr"]
@@ -203,13 +203,15 @@ def validate_one_epoch(model, dataloader, config):
     }
 
 
-def save_checkpoint(model, optimizer, epoch, loss, path):
+def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, path):
     """Save a training checkpoint."""
     torch.save({
         "epoch": epoch,
+        "global_step": global_step,
         "predictor_state_dict": model.predictor.state_dict(),
         "y_projection_state_dict": model.y_encoder.projection.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
         "loss": loss,
     }, path)
 
@@ -227,15 +229,21 @@ def log_artifact(path, name, artifact_type, metadata=None):
     wandb.log_artifact(artifact)
 
 
-def load_checkpoint(model, optimizer, path, device):
-    """Load checkpoint and return start epoch."""
+def load_checkpoint(model, optimizer, scheduler, path, device):
+    """Load checkpoint and return (start_epoch, global_step)."""
     ckpt = torch.load(path, map_location=device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    print(f"Resumed from epoch {ckpt['epoch']} (loss={ckpt['loss']:.4f})")
-    return ckpt["epoch"] + 1
+    if scheduler is not None and "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    
+    start_epoch = ckpt["epoch"] + 1
+    global_step = ckpt.get("global_step", start_epoch * 232) # Fallback
+    
+    print(f"✅ Checkpoint loaded: Finished Epoch {ckpt['epoch'] + 1} (Step {global_step}, Loss {ckpt['loss']:.4f})")
+    return start_epoch, global_step
 
 
 def main():
@@ -337,14 +345,15 @@ def main():
         pin_memory=config.device == "cuda",
     )
 
-    # Scheduler
+    # Optional: resume
+    start_epoch = 0
+    current_global_step = 0
+    checkpoint_path = args.checkpoint
+    
+    # Initialize scheduler with default (will be updated if resuming)
     total_steps = len(train_loader) * config.epochs
     scheduler = get_lr_scheduler(optimizer, config.warmup_steps, total_steps)
 
-    # Optional: resume
-    start_epoch = 0
-    checkpoint_path = args.checkpoint
-    
     if checkpoint_path:
         # Check if it's a W&B artifact path (contains / or :)
         if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
@@ -368,7 +377,10 @@ def main():
                 checkpoint_path = None
 
         if checkpoint_path and os.path.exists(checkpoint_path):
-            start_epoch = load_checkpoint(model, optimizer, checkpoint_path, config.device)
+            # Pass scheduler to load its state if it exists in checkpoint
+            start_epoch, current_global_step = load_checkpoint(model, optimizer, scheduler, checkpoint_path, config.device)
+            # Re-initialize scheduler with correct last_epoch to ensure warmup is skipped
+            scheduler = get_lr_scheduler(optimizer, config.warmup_steps, total_steps, last_epoch=current_global_step-1)
         else:
             print(f"⚠ Could not find checkpoint: {args.checkpoint}. Starting from scratch.")
 
@@ -379,7 +391,7 @@ def main():
     best_loss = float("inf")
     print(f"Starting training ({len(train_loader)} batches/epoch)...\n")
 
-    global_step = start_epoch * len(train_loader)
+    global_step = current_global_step
 
     for epoch in range(start_epoch, config.epochs):
         print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
@@ -429,10 +441,10 @@ def main():
         # Save checkpoints
         if (epoch + 1) % config.save_every == 0 or epoch == config.epochs - 1:
             ckpt_path = os.path.join(config.checkpoint_dir, "last.pth")
-            save_checkpoint(model, optimizer, epoch, result["avg_loss"], ckpt_path)
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step, result["avg_loss"], ckpt_path)
             print(f"  💾 Saved checkpoint: {ckpt_path}")
             log_artifact(ckpt_path, "vl-jepa-last", "model", {
-                "epoch": epoch + 1, "loss": result["avg_loss"]
+                "epoch": epoch + 1, "loss": result["avg_loss"], "global_step": global_step
             })
 
         # Update best based on validation if available
@@ -446,10 +458,10 @@ def main():
         if current_best_metric < best_loss:
             best_loss = current_best_metric
             best_path = os.path.join(config.checkpoint_dir, "best.pth")
-            save_checkpoint(model, optimizer, epoch, current_best_metric, best_path)
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_best_metric, best_path)
             print(f"  ⭐ New best! ({metric_name}) Saved: {best_path}")
             log_artifact(best_path, "vl-jepa-best", "model", {
-                "epoch": epoch + 1, metric_name: best_loss
+                "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step
             })
 
         print()
