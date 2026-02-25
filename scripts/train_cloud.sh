@@ -16,7 +16,7 @@ fi
 
 # ── Configuration (override via env vars) ───────────────────────
 EPOCHS="${EPOCHS:-20}"
-BATCH_SIZE="${BATCH_SIZE:-16}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
 LR="${LR:-3e-4}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 WANDB_PROJECT="${WANDB_PROJECT:-vl-jepa}"
