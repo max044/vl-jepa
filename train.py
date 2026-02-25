@@ -44,6 +44,7 @@ def parse_args():
     parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
     parser.add_argument("--wandb-entity", type=str, default=None, help="W&B team/entity")
     parser.add_argument("--wandb-run-name", type=str, default=None, help="W&B run name")
+    parser.add_argument("--wandb-id", type=str, default=None, help="W&B run ID to resume")
     return parser.parse_args()
 
 
@@ -258,13 +259,21 @@ def main():
     # ── W&B Init ────────────────────────────────────────────
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=args.wandb_run_name,
-            config=asdict(config),
-            tags=["train", config.device] + (["debug"] if config.debug else []),
-        )
+        wandb_kwargs = {
+            "project": args.wandb_project,
+            "entity": args.wandb_entity,
+            "name": args.wandb_run_name,
+            "config": asdict(config),
+            "tags": ["train", config.device] + (["debug"] if config.debug else []),
+        }
+        
+        # Handle Resume Mode
+        if args.wandb_id:
+            wandb_kwargs["id"] = args.wandb_id
+            wandb_kwargs["resume"] = "must"
+            print(f"🔄 Attempting to resume W&B run: {args.wandb_id}")
+            
+        wandb.init(**wandb_kwargs)
         print(f"W&B run: {wandb.run.url}")
     elif not HAS_WANDB and not args.no_wandb:
         print("Warning: wandb not installed. Install with `pip install wandb` for experiment tracking.")
@@ -334,8 +343,34 @@ def main():
 
     # Optional: resume
     start_epoch = 0
-    if args.checkpoint:
-        start_epoch = load_checkpoint(model, optimizer, args.checkpoint, config.device)
+    checkpoint_path = args.checkpoint
+    
+    if checkpoint_path:
+        # Check if it's a W&B artifact path (contains / or :)
+        if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
+            if use_wandb:
+                print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
+                try:
+                    artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+                    artifact_dir = artifact.download()
+                    # Find the .pth file in the artifact
+                    checkpoint_path = os.path.join(artifact_dir, "best.pth")
+                    if not os.path.exists(checkpoint_path):
+                        # Try last.pth or any .pth
+                        pths = [f for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                        if pths:
+                            checkpoint_path = os.path.join(artifact_dir, pths[0])
+                except Exception as e:
+                    print(f"❌ Failed to download artifact: {e}")
+                    checkpoint_path = None
+            else:
+                print("⚠ W&B is disabled, cannot download artifact.")
+                checkpoint_path = None
+
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            start_epoch = load_checkpoint(model, optimizer, checkpoint_path, config.device)
+        else:
+            print(f"⚠ Could not find checkpoint: {args.checkpoint}. Starting from scratch.")
 
     # Mixed precision scaler (CUDA only)
     scaler = torch.amp.GradScaler() if config.device == "cuda" else None

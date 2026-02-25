@@ -64,33 +64,26 @@ if [ -n "${HF_TOKEN:-}" ]; then
     echo "  ✓ HF configured"
 fi
 
-# ── 7. Download Data (HF vs Legacy) ─────────────────────────────
-if [ -n "${HF_DATASET_ID:-}" ]; then
-    echo ""
-    echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
-    # --local-dir maps HF files to our data/ folder
-    uv run huggingface-cli download "$HF_DATASET_ID" --local-dir data --repo-type dataset
-else
-    # Legacy: Download annotations if not present
-    if [ ! -f data/charades_sta_train.txt ]; then
-        echo ""
-        echo "▸ Downloading Charades-STA annotations..."
-        uv run python download_annotations.py
-    else
-        echo "▸ Annotations already present."
-    fi
-fi
+# ── 7. Download Data from HF ──────────────────────────────────
+# On utilise maintenant exclusivement le repo HF de l'utilisateur
+# qui contient à la fois les vidéos et les annotations.
+export HF_DATASET_ID="max044/Charades_v1_480"
+
+echo ""
+echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
+
+# On télécharge tout dans le dossier data/
+# Les fichiers .txt iront dans data/
+# Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
+uv run huggingface-cli download "$HF_DATASET_ID" --local-dir data --repo-type dataset
+
+echo "✓ Dataset ready in data/"
 
 # ── 8. Check for video data ────────────────────────────────────
 if [ ! -d data/Charades_v1_480 ] || [ -z "$(ls -A data/Charades_v1_480 2>/dev/null)" ]; then
     echo ""
-    echo "⚠  Videos not found at data/Charades_v1_480/"
-    echo "   Download from: https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip"
-    echo "   Then extract to data/Charades_v1_480/"
-    echo ""
-    echo "   Quick command:"
-    echo "   wget -P data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip"
-    echo "   unzip data/Charades_v1_480.zip -d data/"
+    echo "⚠  Videos not found at data/Charades_v1_480/ after HF download. Something went wrong."
+    echo "   Please check the HF dataset or download manually."
 else
     VIDEO_COUNT=$(ls data/Charades_v1_480/*.mp4 2>/dev/null | wc -l)
     echo "▸ Found $VIDEO_COUNT videos in data/Charades_v1_480/"
