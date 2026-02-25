@@ -270,7 +270,7 @@ def main():
         # Handle Resume Mode
         if args.wandb_id:
             wandb_kwargs["id"] = args.wandb_id
-            wandb_kwargs["resume"] = "must"
+            wandb_kwargs["resume"] = "allow"
             print(f"🔄 Attempting to resume W&B run: {args.wandb_id}")
             
         wandb.init(**wandb_kwargs)
@@ -379,7 +379,7 @@ def main():
     best_loss = float("inf")
     print(f"Starting training ({len(train_loader)} batches/epoch)...\n")
 
-    global_step = 0
+    global_step = start_epoch * len(train_loader)
 
     for epoch in range(start_epoch, config.epochs):
         print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
