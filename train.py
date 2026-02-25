@@ -235,13 +235,19 @@ def load_checkpoint(model, optimizer, scheduler, path, device):
     ckpt = torch.load(path, map_location=device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
+    
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-    if scheduler is not None and "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
-        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-    
+        
     start_epoch = ckpt["epoch"] + 1
     global_step = ckpt.get("global_step", start_epoch * 232) # Fallback
+    
+    if scheduler is not None:
+        if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            # Fallback for old checkpoints: manually fast-forward
+            scheduler.last_epoch = global_step
     
     print(f"✅ Checkpoint loaded: Finished Epoch {ckpt['epoch'] + 1} (Step {global_step}, Loss {ckpt['loss']:.4f})")
     return start_epoch, global_step
@@ -378,10 +384,8 @@ def main():
                 checkpoint_path = None
 
         if checkpoint_path and os.path.exists(checkpoint_path):
-            # Pass scheduler to load its state if it exists in checkpoint
+            # Pass scheduler to load its state correctly
             start_epoch, current_global_step = load_checkpoint(model, optimizer, scheduler, checkpoint_path, config.device)
-            # Re-initialize scheduler with correct last_epoch to ensure warmup is skipped
-            scheduler = get_lr_scheduler(optimizer, config.warmup_steps, total_steps, last_epoch=current_global_step-1)
         else:
             print(f"⚠ Could not find checkpoint: {args.checkpoint}. Starting from scratch.")
 
