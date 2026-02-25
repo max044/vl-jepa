@@ -14,6 +14,7 @@ import argparse
 from dataclasses import asdict
 import os
 import time
+import warnings
 
 import torch
 from torch.utils.data import DataLoader
@@ -242,12 +243,17 @@ def load_checkpoint(model, optimizer, scheduler, path, device):
     start_epoch = ckpt["epoch"] + 1
     global_step = ckpt.get("global_step", start_epoch * 232) # Fallback
     
-    if scheduler is not None:
-        if "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
-            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-        else:
-            # Fallback for old checkpoints: manually fast-forward
-            scheduler.last_epoch = global_step
+    if scheduler is not None and "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    
+    # Suppress false-positive PyTorch warning on first batch after resume.
+    # The warning fires because optimizer._step_count resets to 0 on load_state_dict,
+    # but our code order (optimizer.step() THEN scheduler.step()) is correct.
+    warnings.filterwarnings(
+        "ignore",
+        message="Detected call of `lr_scheduler.step\\(\\)` before `optimizer.step\\(\\)`",
+        category=UserWarning,
+    )
     
     print(f"✅ Checkpoint loaded: Finished Epoch {ckpt['epoch'] + 1} (Step {global_step}, Loss {ckpt['loss']:.4f})")
     return start_epoch, global_step
