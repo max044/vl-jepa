@@ -218,8 +218,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, path)
     }, path)
 
 
-def log_artifact(path, name, artifact_type, metadata=None):
-    """Upload a checkpoint as a W&B Artifact for model versioning."""
+def log_artifact(path, name, artifact_type, metadata=None, aliases=None):
+    """Upload a checkpoint as a W&B Artifact with versioning and aliases."""
     if not (HAS_WANDB and wandb.run):
         return
     artifact = wandb.Artifact(
@@ -228,7 +228,8 @@ def log_artifact(path, name, artifact_type, metadata=None):
         metadata=metadata or {},
     )
     artifact.add_file(path)
-    wandb.log_artifact(artifact)
+    # aliases should be a list like ['best', 'latest']
+    wandb.log_artifact(artifact, aliases=aliases or [])
 
 
 def load_checkpoint(model, optimizer, scheduler, path, device):
@@ -325,10 +326,23 @@ def main():
     )
 
     # Dataset
-    print("Loading dataset...")
-    train_dataset = CharadesSTADataset(
+    print("Loading training dataset...")
+    full_train_dataset = CharadesSTADataset(
         config.anno_train, config.videos_dir, config, split="train"
     )
+
+    # Split into train and validation
+    val_size = int(len(full_train_dataset) * config.val_split)
+    train_size = len(full_train_dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        full_train_dataset, 
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42) # Fixed seed for reproducibility
+    )
+    # Set splits for logging
+    val_dataset.dataset.split = "val"
+
+    print(f"Dataset split: {train_size} training samples, {val_size} validation samples")
 
     train_loader = DataLoader(
         train_dataset,
@@ -340,14 +354,7 @@ def main():
         pin_memory=config.device == "cuda",
     )
 
-    # Validation Dataset
-    print("Loading test/val dataset...")
-    val_dataset = CharadesSTADataset(
-        config.anno_test, config.videos_dir, config, split="test"
-    )
-    if config.val_samples and not config.debug:
-        val_dataset.samples = val_dataset.samples[:config.val_samples]
-
+    # Validation DataLoader
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
@@ -456,12 +463,23 @@ def main():
 
         # Save checkpoints
         if (epoch + 1) % config.save_every == 0 or epoch == config.epochs - 1:
-            ckpt_path = os.path.join(config.checkpoint_dir, "last.pth")
+            # 1. Save descriptive unique checkpoint
+            ckpt_name = f"vljepa_e{epoch+1}_s{global_step}.pth"
+            ckpt_path = os.path.join(config.checkpoint_dir, ckpt_name)
             save_checkpoint(model, optimizer, scheduler, epoch, global_step, result["avg_loss"], ckpt_path)
-            print(f"  💾 Saved checkpoint: {ckpt_path}")
-            log_artifact(ckpt_path, "vl-jepa-last", "model", {
-                "epoch": epoch + 1, "loss": result["avg_loss"], "global_step": global_step
-            })
+            
+            # 2. Update local 'last.pth' link (copy for simplicity)
+            last_path = os.path.join(config.checkpoint_dir, "last.pth")
+            import shutil
+            shutil.copy2(ckpt_path, last_path)
+            
+            print(f"  💾 Saved checkpoint: {ckpt_path} (updated last.pth)")
+            
+            # 3. Log to W&B with 'latest' alias
+            log_artifact(ckpt_path, "vl-jepa-model", "model", metadata={
+                "epoch": epoch + 1, "loss": result["avg_loss"], "global_step": global_step,
+                "run_name": wandb.run.name if wandb.run else "local"
+            }, aliases=["latest"])
 
         # Update best based on validation if available
         if val_result:
@@ -473,12 +491,24 @@ def main():
 
         if current_best_metric < best_loss:
             best_loss = current_best_metric
-            best_path = os.path.join(config.checkpoint_dir, "best.pth")
-            save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_best_metric, best_path)
-            print(f"  ⭐ New best! ({metric_name}) Saved: {best_path}")
-            log_artifact(best_path, "vl-jepa-best", "model", {
-                "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step
-            })
+            
+            # 1. Unique best filename
+            best_ckpt_name = f"vljepa_best_e{epoch+1}_s{global_step}.pth"
+            best_ckpt_path = os.path.join(config.checkpoint_dir, best_ckpt_name)
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_best_metric, best_ckpt_path)
+            
+            # 2. Update local 'best.pth'
+            best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
+            import shutil
+            shutil.copy2(best_ckpt_path, best_generic_path)
+            
+            print(f"  ⭐ New best! ({metric_name}) Saved: {best_ckpt_path}")
+            
+            # 3. Log to W&B with 'best' alias
+            log_artifact(best_ckpt_path, "vl-jepa-model", "model", metadata={
+                "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
+                "run_name": wandb.run.name if wandb.run else "local"
+            }, aliases=["best"])
 
         print()
 

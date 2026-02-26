@@ -55,6 +55,7 @@ class Config:
     anno_train: str = "./data/charades_sta_train.txt"
     anno_test: str = "./data/charades_sta_test.txt"
     hf_dataset_id: str = "max044/Charades_v1_480"
+    val_split: float = 0.1  # % of training data to use for validation
 
     # ── Checkpoints ─────────────────────────────────────────
     checkpoint_dir: str = "./checkpoints"
