@@ -478,7 +478,8 @@ def main():
             print(f"  💾 Saved checkpoint: {ckpt_path} (updated last.pth)")
             
             # 3. Log to W&B with 'latest' alias
-            log_artifact(ckpt_path, "vl-jepa-model", "model", metadata={
+            artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
+            log_artifact(ckpt_path, artifact_name, "model", metadata={
                 "epoch": epoch + 1, "loss": result["avg_loss"], "global_step": global_step,
                 "run_name": wandb.run.name if wandb.run else "local"
             }, aliases=["latest"])
@@ -508,7 +509,8 @@ def main():
             print(f"  ⭐ New best! ({metric_name}) Saved: {best_ckpt_path}")
             
             # 3. Log to W&B with 'best' alias
-            log_artifact(best_ckpt_path, "vl-jepa-model", "model", metadata={
+            artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
+            log_artifact(best_ckpt_path, artifact_name, "model", metadata={
                 "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
                 "run_name": wandb.run.name if wandb.run else "local"
             }, aliases=["best"])
