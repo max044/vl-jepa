@@ -484,46 +484,43 @@ def main():
                 "run_name": wandb.run.name if wandb.run else "local"
             }, aliases=["latest"])
 
-        # Update best based on validation if available
+        # Update best based on validation ONLY
         if val_result:
-            current_best_metric = val_result["avg_loss"]
+            current_val_loss = val_result["avg_loss"]
             metric_name = "val/loss"
-        else:
-            current_best_metric = result["avg_loss"]
-            metric_name = "train/loss"
 
-        if current_best_metric < best_loss:
-            best_loss = current_best_metric
-            patience_counter = 0  # Reset patience on improvement
-            
-            # 1. Unique best filename
-            best_ckpt_name = f"vljepa_best_e{epoch+1}_s{global_step}.pth"
-            best_ckpt_path = os.path.join(config.checkpoint_dir, best_ckpt_name)
-            save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_best_metric, best_ckpt_path)
-            
-            # 2. Update local 'best.pth'
-            best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
-            import shutil
-            shutil.copy2(best_ckpt_path, best_generic_path)
-            
-            print(f"  ⭐ New best! ({metric_name}) Saved: {best_ckpt_path}")
-            
-            # 3. Log to W&B with 'best' alias
-            artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
-            log_artifact(best_ckpt_path, artifact_name, "model", metadata={
-                "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
-                "run_name": wandb.run.name if wandb.run else "local"
-            }, aliases=["best"])
-        else:
-            patience_counter += 1
-            print(f"  ⚠️ No improvement for {patience_counter} validation(s).")
+            if current_val_loss < best_loss:
+                best_loss = current_val_loss
+                patience_counter = 0  # Reset patience on improvement
+                
+                # 1. Unique best filename
+                best_ckpt_name = f"vljepa_best_e{epoch+1}_s{global_step}.pth"
+                best_ckpt_path = os.path.join(config.checkpoint_dir, best_ckpt_name)
+                save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_val_loss, best_ckpt_path)
+                
+                # 2. Update local 'best.pth'
+                best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
+                import shutil
+                shutil.copy2(best_ckpt_path, best_generic_path)
+                
+                print(f"  ⭐ New best! ({metric_name}) Saved: {best_ckpt_path}")
+                
+                # 3. Log to W&B with 'best' alias
+                artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
+                log_artifact(best_ckpt_path, artifact_name, "model", metadata={
+                    "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
+                    "run_name": wandb.run.name if wandb.run else "local"
+                }, aliases=["best"])
+            else:
+                patience_counter += 1
+                print(f"  ⚠️ No improvement for {patience_counter} validation(s).")
+
+            # Early Stopping Check
+            if config.early_stopping_patience > 0 and patience_counter >= config.early_stopping_patience:
+                print(f"🛑 Early stopping triggered after {epoch + 1} epochs due to no improvement in the last {patience_counter} validations.")
+                break
 
         print()
-
-        # Early Stopping Check
-        if config.early_stopping_patience > 0 and patience_counter >= config.early_stopping_patience:
-            print(f"🛑 Early stopping triggered after {epoch + 1} epochs due to no improvement in the last {patience_counter} validations.")
-            break
 
     print(f"Training complete! Best loss: {best_loss:.4f}")
 
