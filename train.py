@@ -416,6 +416,8 @@ def main():
     else:
         global_step = current_global_step
 
+    patience_counter = 0
+
     for epoch in range(start_epoch, config.epochs):
         print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
 
@@ -491,6 +493,7 @@ def main():
 
         if current_best_metric < best_loss:
             best_loss = current_best_metric
+            patience_counter = 0  # Reset patience on improvement
             
             # 1. Unique best filename
             best_ckpt_name = f"vljepa_best_e{epoch+1}_s{global_step}.pth"
@@ -509,10 +512,45 @@ def main():
                 "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
                 "run_name": wandb.run.name if wandb.run else "local"
             }, aliases=["best"])
+        else:
+            patience_counter += 1
+            print(f"  ⚠️ No improvement for {patience_counter} validation(s).")
 
         print()
 
+        # Early Stopping Check
+        if config.early_stopping_patience > 0 and patience_counter >= config.early_stopping_patience:
+            print(f"🛑 Early stopping triggered after {epoch + 1} epochs due to no improvement in the last {patience_counter} validations.")
+            break
+
     print(f"Training complete! Best loss: {best_loss:.4f}")
+
+    # ── Post-Training Test ──────────────────────────────────
+    print(f"\n🚀 Running final evaluation on the test set using the best checkpoint...")
+    
+    # We load the best.pth to ensure we test the optimal model found
+    best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
+    if os.path.exists(best_generic_path):
+        import subprocess
+        eval_cmd = [
+            "python", "eval.py", 
+            "--checkpoint", best_generic_path,
+            "--device", config.device
+        ]
+        if use_wandb:
+            # We don't disable wandb for eval if it was used for training,
+            # but we want it to log in the same project
+            eval_cmd.extend(["--wandb-project", args.wandb_project])
+            if wandb.run:
+                eval_cmd.extend(["--wandb-run-path", f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}"])
+
+        try:
+            subprocess.run(eval_cmd, check=True)
+            print("✅ Final evaluation completed successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Final evaluation failed with error: {e}")
+    else:
+        print(f"⚠️ Could not find {best_generic_path} for final evaluation.")
 
     # ── W&B: finalize ──────────────────────────────────────
     if use_wandb:

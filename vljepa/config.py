@@ -62,6 +62,7 @@ class Config:
     save_every: int = 2  # save checkpoint every N epochs
     val_every: int = 2   # run validation every N epochs
     val_samples: int = 500  # limit validation samples for speed
+    early_stopping_patience: int = 5  # Stop if no validation improvement for N epochs (-1 to disable)
 
     # ── Inference ───────────────────────────────────────────
     window_sizes: list[float] = field(default_factory=lambda: [2.0, 4.0, 8.0, 16.0])
