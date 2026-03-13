@@ -87,13 +87,15 @@ cd ~/vl-jepa
 cp .env.example .env
 nano .env  # Set WANDB_API_KEY (get it at https://wandb.ai/authorize)
 
-# 3. Download videos
-wget -P data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip
+# 3. Download Data (Fastest: Hugging Face with hf_transfer)
+uv pip install hf_transfer
+HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download max044/Charades_v1_480 --local-dir data --repo-type dataset
+
+or (Direct S3 with multi-connection aria2c)
+
+sudo apt-get update && sudo apt-get install -y aria2
+aria2c -x 16 -s 16 -d data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip
 unzip data/Charades_v1_480.zip -d data/
-
-or
-
-uv run hf download max044/Charades_v1_480 --local-dir data/Charades_v1_480 --repo-type dataset
 
 # 4. Launch training
 bash scripts/train_cloud.sh
