@@ -88,7 +88,8 @@ cp .env.example .env
 nano .env  # Set WANDB_API_KEY (get it at https://wandb.ai/authorize)
 
 # 3. Download Data (Fastest: Hugging Face with hf_transfer)
-uv pip install hf_transfer
+uv add hf_transfer
+hf auth login --token "$HF_TOKEN"
 HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download max044/Charades_v1_480 --local-dir data --repo-type dataset
 
 or (Direct S3 with multi-connection aria2c)
