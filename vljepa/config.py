@@ -68,6 +68,7 @@ class Config:
     window_sizes: list[float] = field(default_factory=lambda: [2.0, 4.0, 8.0, 16.0])
     window_stride: float = 1.0
     nms_threshold: float = 0.5
+    inference_batch_size: int = 8  # Batch size for sliding window proposals
     top_k: int = 5
 
     # ── Debug ───────────────────────────────────────────────

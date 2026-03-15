@@ -8,12 +8,13 @@ Evaluates moment retrieval performance using standard metrics:
 
 Usage:
     python eval.py --checkpoint checkpoints/best.pth
-    python eval.py --checkpoint checkpoints/best.pth --device cuda
-    python eval.py --checkpoint checkpoints/best.pth --wandb-project vl-jepa
 """
 
 import argparse
+import os
+from collections import defaultdict
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 try:
@@ -25,15 +26,13 @@ except ImportError:
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset
 from vljepa.models import VLJepa
-from vljepa.utils import temporal_iou, get_video_duration
+from vljepa.utils import temporal_iou, get_video_duration, sliding_window_proposals, load_video_frames, nms
 
 try:
     from huggingface_hub import hf_hub_download
     HAS_HF_HUB = True
 except ImportError:
     HAS_HF_HUB = False
-
-from infer import retrieve_moments
 
 
 def parse_args():
@@ -48,6 +47,7 @@ def parse_args():
     return parser.parse_args()
 
 
+@torch.no_grad()
 def main():
     args = parse_args()
 
@@ -59,7 +59,6 @@ def main():
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
         if args.wandb_run_path:
-            # Resume/attach to existing training run
             wandb.init(
                 project=args.wandb_project,
                 id=args.wandb_run_path.split("/")[-1],
@@ -73,73 +72,60 @@ def main():
                 config={"checkpoint": args.checkpoint, "device": config.device},
                 tags=["eval"],
             )
-        print(f"W&B run: {wandb.run.url}")
 
     print(f"Device: {config.device}")
-    print()
 
     # Load model
     print("Loading model...")
     model = VLJepa(config)
 
     checkpoint_path = args.checkpoint
-    # Check if it's a W&B artifact path
-    if (":" in checkpoint_path or "/" in checkpoint_path) and not __import__("os").path.exists(checkpoint_path):
+    if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
         if use_wandb:
             print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
-            try:
-                artifact = wandb.run.use_artifact(checkpoint_path, type='model')
-                artifact_dir = artifact.download()
-                checkpoint_path = __import__("os").path.join(artifact_dir, "best.pth")
-                if not __import__("os").path.exists(checkpoint_path):
-                    pths = [f for f in __import__("os").listdir(artifact_dir) if f.endswith(".pth")]
-                    if pths:
-                        checkpoint_path = __import__("os").path.join(artifact_dir, pths[0])
-            except Exception as e:
-                print(f"❌ Failed to download artifact: {e}")
-                return
+            artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+            artifact_dir = artifact.download()
+            checkpoint_path = os.path.join(artifact_dir, "best.pth")
+            if not os.path.exists(checkpoint_path):
+                pths = [f for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                if pths:
+                    checkpoint_path = os.path.join(artifact_dir, pths[0])
+        else:
+            print("❌ W&B disabled, cannot download artifact.")
+            return
 
     ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
-
-    model.predictor.to(config.device)
-    model.y_encoder.projection.to(config.device)
     model.predictor.eval()
-
     print(f"Loaded checkpoint (epoch {ckpt['epoch']}, loss {ckpt['loss']:.4f})\n")
 
-    # Load test dataset
-    test_dataset = CharadesSTADataset(
-        config.anno_test, config.videos_dir, config, split="test"
-    )
-
+    # Load dataset
+    test_dataset = CharadesSTADataset(config.anno_test, config.videos_dir, config, split="test")
     samples = test_dataset.samples
     if args.max_samples:
         samples = samples[:args.max_samples]
 
-    print(f"Evaluating on {len(samples)} samples...\n")
+    # 🚀 Optimization: Group queries by video
+    video_to_queries = defaultdict(list)
+    for s in samples:
+        video_to_queries[s["video_path"]].append(s)
 
-    # Metrics accumulators
+    print(f"Evaluating {len(samples)} queries across {len(video_to_queries)} unique videos...\n")
+
     ious = []
     recalls = {0.3: 0, 0.5: 0, 0.7: 0}
     total = 0
     skipped = 0
 
-    for i, sample in enumerate(tqdm(samples, desc="Evaluating")):
-        video_path = sample["video_path"]
-        caption = sample["caption"]
-        gt_start = sample["start"]
-        gt_end = sample["end"]
-
-        # ── Lazy Loading ──────────────────────────────────────────
-        if not __import__("os").path.exists(video_path) and config.hf_dataset_id:
+    pbar = tqdm(total=len(samples), desc="Evaluating")
+    
+    for video_path, group in video_to_queries.items():
+        # 1. Lazy Loading / Verification
+        if not os.path.exists(video_path) and config.hf_dataset_id:
             if HAS_HF_HUB:
                 try:
-                    video_id = sample.get("video_id")
-                    if not video_id: # fallback for annotations loaded from file
-                        video_id = __import__("os").path.basename(video_path).replace(".mp4", "")
-                    
+                    video_id = group[0].get("video_id") or os.path.basename(video_path).replace(".mp4", "")
                     video_path = hf_hub_download(
                         repo_id=config.hf_dataset_id,
                         filename=f"{video_id}.mp4",
@@ -148,65 +134,114 @@ def main():
                     )
                 except Exception as e:
                     print(f"❌ Error downloading {video_id}: {e}")
-                    skipped += 1
+                    skipped += len(group)
+                    pbar.update(len(group))
                     continue
             else:
-                print("❌ Error: huggingface_hub not installed, cannot lazy load.")
-                skipped += 1
+                skipped += len(group)
+                pbar.update(len(group))
                 continue
 
-        # Use the ground-truth caption as the query for moment retrieval
-        try:
-            results = retrieve_moments(model, video_path, caption, config)
-        except Exception as e:
-            skipped += 1
+        # 2. Extract visual features for all windows of this video ONCE
+        duration = get_video_duration(video_path)
+        if duration <= 0:
+            skipped += len(group)
+            pbar.update(len(group))
             continue
 
-        if len(results) == 0:
-            skipped += 1
+        proposals = sliding_window_proposals(duration, config.window_sizes, config.window_stride)
+        
+        all_sv = []
+        valid_proposals = []
+        batch_size = config.inference_batch_size
+        
+        for i in range(0, len(proposals), batch_size):
+            batch_props = proposals[i : i + batch_size]
+            frames_batch = []
+            prop_indices = []
+            for start, end in batch_props:
+                frames = load_video_frames(video_path, start, end, config.num_frames)
+                if frames:
+                    frames_batch.append(frames)
+                    prop_indices.append((start, end))
+            
+            if not frames_batch:
+                continue
+                
+            pixel_values = model.x_encoder.preprocess_frames(frames_batch, device=config.device)
+            sv = model.x_encoder(pixel_values) # (B, hidden)
+            all_sv.append(sv)
+            valid_proposals.extend(prop_indices)
+
+        if not all_sv:
+            skipped += len(group)
+            pbar.update(len(group))
             continue
+            
+        sv_combined = torch.cat(all_sv, dim=0) # (TotalProposals, hidden)
 
-        # Top-1 prediction
-        pred_start = results[0]["start"]
-        pred_end = results[0]["end"]
+        # 3. For each query, just run the Predictor (Fast)
+        for sample in group:
+            caption = sample["caption"]
+            gt_start = sample["start"]
+            gt_end = sample["end"]
 
-        iou = temporal_iou(pred_start, pred_end, gt_start, gt_end)
-        ious.append(iou)
+            try:
+                # Text ref
+                sy_ref = model.encode_text([caption], device=config.device)
+                sy_ref = F.normalize(sy_ref, dim=-1)
+                
+                # Predictor pass for all proposals
+                query_tokens = model.query_encoder.tokenize([caption], device=config.device)
+                all_sims = []
+                for i in range(0, sv_combined.size(0), batch_size):
+                    batch_sv = sv_combined[i : i + batch_size]
+                    B = batch_sv.size(0)
+                    q_ids = query_tokens["input_ids"].expand(B, -1)
+                    q_mask = query_tokens["attention_mask"].expand(B, -1)
+                    
+                    sy_hat = model.predictor(batch_sv, q_ids, q_mask)
+                    sy_hat = F.normalize(sy_hat, dim=-1)
+                    sims = (sy_hat @ sy_ref.T).squeeze(-1)
+                    all_sims.append(sims)
+                
+                scores = torch.cat(all_sims, dim=0).cpu().numpy()
+                kept_indices = nms(valid_proposals, scores.tolist(), config.nms_threshold)
+                
+                if kept_indices:
+                    pred_start, pred_end = valid_proposals[kept_indices[0]]
+                    iou = temporal_iou(pred_start, pred_end, gt_start, gt_end)
+                    ious.append(iou)
+                    for thresh in recalls:
+                        if iou >= thresh:
+                            recalls[thresh] += 1
+                    total += 1
+                else:
+                    skipped += 1
+            except Exception as e:
+                skipped += 1
+            
+            pbar.update(1)
 
-        for thresh in recalls:
-            if iou >= thresh:
-                recalls[thresh] += 1
+    pbar.close()
 
-        total += 1
-
-    # Print results
-    print(f"\n{'═' * 50}")
-    print(f"VL-JEPA Evaluation Results")
-    print(f"{'═' * 50}")
-    print(f"Evaluated: {total} / {len(samples)} samples (skipped {skipped})")
-    print()
-
+    # 📊 Results
+    print(f"\n{'═' * 50}\nVL-JEPA Evaluation Results\n{'═' * 50}")
+    print(f"Evaluated: {total} / {len(samples)} (skipped {skipped})")
     if total > 0:
-        eval_metrics = {}
-        for thresh, count in sorted(recalls.items()):
-            r = count / total * 100
-            print(f"  R@1 IoU={thresh:.1f}:  {r:6.2f}%  ({count}/{total})")
-            eval_metrics[f"eval/R@1_IoU={thresh:.1f}"] = r
-
-        mean_iou = sum(ious) / len(ious) * 100
-        print(f"\n  mIoU:          {mean_iou:6.2f}%")
-        eval_metrics["eval/mIoU"] = mean_iou
-
-        # ── W&B: log eval metrics ────────────────────────
+        metrics = {}
+        for t, c in sorted(recalls.items()):
+            r = c / total * 100
+            print(f"  R@1 IoU={t:.1f}:  {r:6.2f}%")
+            metrics[f"eval/R@1_IoU={t}"] = r
+        m_iou = sum(ious) / len(ious) * 100
+        print(f"  mIoU:          {m_iou:6.2f}%")
+        metrics["eval/mIoU"] = m_iou
         if use_wandb:
-            wandb.log(eval_metrics)
-            for k, v in eval_metrics.items():
-                wandb.summary[k] = v
+            wandb.log(metrics)
             wandb.finish()
     else:
-        print("  No samples evaluated successfully.")
-        if use_wandb:
-            wandb.finish()
+        if use_wandb: wandb.finish()
 
 
 if __name__ == "__main__":

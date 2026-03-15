@@ -90,8 +90,8 @@ def retrieve_moments(
     valid_proposals = []
 
     # Process proposals in batches for efficiency
-    # Reduced batch_size significantly to avoid MPS OOM with V-JEPA 2 ViT-L
-    batch_size = 2
+    # Process proposals in batches for efficiency
+    batch_size = config.inference_batch_size
     for i in range(0, len(proposals), batch_size):
         batch_props = proposals[i : i + batch_size]
 
