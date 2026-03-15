@@ -23,9 +23,10 @@ echo "║       VL-JEPA Cloud Evaluation           ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-if [ ! -f "$CHECKPOINT" ]; then
+# Check if checkpoint exists locally or if it looks like a W&B artifact (contains : or /)
+if [[ ! -f "$CHECKPOINT" ]] && [[ "$CHECKPOINT" != *":"* ]] && [[ "$CHECKPOINT" != *"/"* ]]; then
     echo "✗ Checkpoint not found: $CHECKPOINT"
-    echo "  Please provide a valid checkpoint via CHECKPOINT=path/to/model.pth"
+    echo "  Please provide a valid local path or W&B Artifact (e.g., max044/vl-jepa/model-xyz:best) via CHECKPOINT="
     exit 1
 fi
 
