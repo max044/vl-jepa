@@ -57,7 +57,32 @@ def main():
 
     # Load model
     model = VLJepa(config)
-    ckpt = torch.load(args.checkpoint, map_location=config.device, weights_only=True)
+
+    checkpoint_path = args.checkpoint
+    if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
+        if use_wandb:
+            print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
+            try:
+                artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+                artifact_dir = artifact.download()
+                pths = [os.path.join(artifact_dir, f) for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                if not pths:
+                    print(f"❌ Error: No .pth files found in artifact {checkpoint_path}")
+                    return
+                checkpoint_path = pths[0]
+            except Exception as e:
+                print(f"❌ Failed to download artifact: {e}")
+                return
+        else:
+            print("❌ W&B is disabled, cannot download artifact.")
+            return
+
+    if not os.path.exists(checkpoint_path):
+        print(f"❌ Error: Checkpoint not found at {checkpoint_path}")
+        return
+
+    print(f"📂 Loading weights from: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
     model.predictor.eval()
