@@ -92,18 +92,36 @@ class XEncoder(nn.Module):
         # Stack -> (B, T, 3, H, W)
         pixel_values = torch.stack(final_padded, dim=0) 
         
-        # Input to V-JEPA 2 (via HF) usually expects (B, T, C, H, W)
-        
         # Normalize (broadcasting T)
-        # mean/std are (1, 3, 1, 1, 1). We need to align with (B, T, 3, H, W)
-        # Permute to (B, 3, T, H, W) for normalization
         pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
         pixel_values = (pixel_values - mean) / std
-        
-        # Permute back to (B, T, 3, H, W)
         pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
         
         return pixel_values
+
+    def preprocess_video(self, video_frames: np.ndarray, device: str = "cpu") -> torch.Tensor:
+        """Optimized preprocessing for a full video on GPU.
+        
+        Args:
+            video_frames: (T, H, W, 3) uint8 numpy array.
+        Returns:
+            (T, 3, 224, 224) normalized float tensor on device.
+        """
+        # 1. Single transfer to GPU
+        t = torch.tensor(video_frames, dtype=torch.float32, device=device)
+        
+        # 2. Reshape and normalize (T, H, W, 3) -> (T, 3, H, W)
+        t = t.permute(0, 3, 1, 2) / 255.0
+        
+        # 3. Bulk Resize (T, 3, 224, 224)
+        t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
+        
+        # 4. Normalize
+        mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        t = (t - mean) / std
+        
+        return t
 
 
 class QueryEncoder(nn.Module):

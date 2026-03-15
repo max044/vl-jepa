@@ -5,6 +5,7 @@ import os
 import cv2
 import torch
 import torch.nn.functional as F
+import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -15,7 +16,7 @@ os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset
 from vljepa.models import VLJepa
-from vljepa.utils import temporal_iou, sliding_window_proposals, nms, load_video_to_ram, sample_frames_from_array
+from vljepa.utils import temporal_iou, sliding_window_proposals, nms, load_video_to_ram
 
 try:
     from huggingface_hub import hf_hub_download
@@ -57,7 +58,7 @@ def main():
 
     # Load model
     model = VLJepa(config)
-
+    
     checkpoint_path = args.checkpoint
     if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
         if use_wandb:
@@ -112,25 +113,48 @@ def main():
             else:
                 skipped += len(group); pbar.update(len(group)); continue
 
-        # 2. LOAD FULL VIDEO TO RAM (The Speed Up)
+        # 2. LOAD FULL VIDEO TO RAM
         v_data = load_video_to_ram(video_path)
         if not v_data:
             skipped += len(group); pbar.update(len(group)); continue
 
-        duration = len(v_data["frames"]) / v_data["fps"]
+        fps = v_data["fps"]
+        frames_np = v_data["frames"]
+        duration = len(frames_np) / fps
+        
+        # 🚀 PREPROCESS FULL VIDEO ON GPU ONCE
+        # frames_gpu: (T, 3, 224, 224)
+        frames_gpu = model.x_encoder.preprocess_video(frames_np, device=config.device)
+        
         proposals = sliding_window_proposals(duration, config.window_sizes, config.window_stride)
         
         # Batch extract visual features
         all_sv, valid_p = [], []
         bs = config.inference_batch_size
+        
         for i in range(0, len(proposals), bs):
-            fb = []
-            for start, end in proposals[i:i+bs]:
-                f = sample_frames_from_array(v_data, start, end, config.num_frames)
-                if f: fb.append(f); valid_p.append((start, end))
-            if fb:
-                pv = model.x_encoder.preprocess_frames(fb, device=config.device)
-                all_sv.append(model.x_encoder(pv))
+            batch_props = proposals[i:i+bs]
+            fb_list = []
+            
+            for start, end in batch_props:
+                start_f = max(0, int(start * fps))
+                end_f = min(len(frames_gpu) - 1, int(end * fps))
+                
+                if end_f <= start_f:
+                    continue
+                
+                # Sample 16 frames uniformly from the preprocessed tensor
+                indices = torch.linspace(start_f, end_f, config.num_frames, device=config.device).long()
+                f_sampled = frames_gpu[indices] # (16, 3, 224, 224)
+                fb_list.append(f_sampled)
+                valid_p.append((start, end))
+            
+            if fb_list:
+                # Stack to (B, T, 3, 224, 224)
+                pixel_values = torch.stack(fb_list, dim=0)
+                # V-JEPA forward
+                sv = model.x_encoder(pixel_values)
+                all_sv.append(sv)
         
         if not all_sv:
             skipped += len(group); pbar.update(len(group)); continue
@@ -142,6 +166,7 @@ def main():
             try:
                 sy_ref = F.normalize(model.encode_text([sample["caption"]], device=config.device), dim=-1)
                 qt = model.query_encoder.tokenize([sample["caption"]], device=config.device)
+                
                 sims = []
                 for j in range(0, sv_full.size(0), bs):
                     b_sv = sv_full[j : j + bs]
