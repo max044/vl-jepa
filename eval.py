@@ -56,8 +56,10 @@ def main():
         else:
             wandb.init(project=args.wandb_project, job_type="eval", tags=["eval"])
 
-    # Load model
+    # Load model & move to half precision for A100 speedup
     model = VLJepa(config)
+    if config.device == "cuda":
+        model = model.half()
     
     checkpoint_path = args.checkpoint
     if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
@@ -113,7 +115,7 @@ def main():
             else:
                 skipped += len(group); pbar.update(len(group)); continue
 
-        # 2. LOAD FULL VIDEO TO RAM
+        # 2. LOAD BRUT VIDEO TO RAM
         v_data = load_video_to_ram(video_path)
         if not v_data:
             skipped += len(group); pbar.update(len(group)); continue
@@ -122,8 +124,7 @@ def main():
         frames_np = v_data["frames"]
         duration = len(frames_np) / fps
         
-        # 🚀 PREPROCESS FULL VIDEO ON GPU ONCE
-        # frames_gpu: (T, 3, 224, 224)
+        # 🚀 PREPROCESS FULL VIDEO ON GPU ONCE (IN FP16 + BGR->RGB)
         frames_gpu = model.x_encoder.preprocess_video(frames_np, device=config.device)
         
         proposals = sliding_window_proposals(duration, config.window_sizes, config.window_stride)
@@ -135,55 +136,61 @@ def main():
         for i in range(0, len(proposals), bs):
             batch_props = proposals[i:i+bs]
             fb_list = []
-            
             for start, end in batch_props:
                 start_f = max(0, int(start * fps))
                 end_f = min(len(frames_gpu) - 1, int(end * fps))
-                
-                if end_f <= start_f:
-                    continue
-                
-                # Sample 16 frames uniformly from the preprocessed tensor
+                if end_f <= start_f: continue
                 indices = torch.linspace(start_f, end_f, config.num_frames, device=config.device).long()
-                f_sampled = frames_gpu[indices] # (16, 3, 224, 224)
-                fb_list.append(f_sampled)
+                fb_list.append(frames_gpu[indices])
                 valid_p.append((start, end))
             
             if fb_list:
-                # Stack to (B, T, 3, 224, 224)
                 pixel_values = torch.stack(fb_list, dim=0)
-                # V-JEPA forward
-                sv = model.x_encoder(pixel_values)
-                all_sv.append(sv)
+                all_sv.append(model.x_encoder(pixel_values))
         
         if not all_sv:
             skipped += len(group); pbar.update(len(group)); continue
             
-        sv_full = torch.cat(all_sv, dim=0)
+        sv_full = torch.cat(all_sv, dim=0) # (NumProposals, Hidden)
 
-        # 3. Predict for each query
-        for sample in group:
-            try:
-                sy_ref = F.normalize(model.encode_text([sample["caption"]], device=config.device), dim=-1)
-                qt = model.query_encoder.tokenize([sample["caption"]], device=config.device)
+        # 3. Predict for each query vectorially
+        captions = [s["caption"] for s in group]
+        # Pre-compute all query references for the video
+        sy_refs = F.normalize(model.encode_text(captions, device=config.device), dim=-1) # (NumQueries, Embed)
+        
+        # Tokenize queries once
+        qt = model.query_encoder.tokenize(captions, device=config.device)
+        
+        # We need to compute sy_hat for each (proposal, query) pair.
+        # But wait, Sy_hat depends on both the video segment (sv) AND the query text!
+        # So it's (NumProposals * NumQueries) forward passes of the Predictor.
+        # However, Predictor is super fast.
+        
+        for q_idx, sample in enumerate(group):
+            sy_ref = sy_refs[q_idx:q_idx+1]
+            q_ids = qt["input_ids"][q_idx:q_idx+1].expand(bs, -1)
+            q_mask = qt["attention_mask"][q_idx:q_idx+1].expand(bs, -1)
+            
+            sims_list = []
+            for j in range(0, sv_full.size(0), bs):
+                b_sv = sv_full[j : j + bs]
+                current_bs = b_sv.size(0)
+                # Expand query to match batch size
+                b_q_ids = q_ids[:current_bs]
+                b_q_mask = q_mask[:current_bs]
                 
-                sims = []
-                for j in range(0, sv_full.size(0), bs):
-                    b_sv = sv_full[j : j + bs]
-                    B = b_sv.size(0)
-                    sy_hat = F.normalize(model.predictor(b_sv, qt["input_ids"].expand(B, -1), qt["attention_mask"].expand(B, -1)), dim=-1)
-                    sims.append((sy_hat @ sy_ref.T).squeeze(-1))
-                
-                scores = torch.cat(sims, dim=0).cpu().numpy().tolist()
-                k = nms(valid_p, scores, config.nms_threshold)
-                if k:
-                    iou = temporal_iou(valid_p[k[0]][0], valid_p[k[0]][1], sample["start"], sample["end"])
-                    ious.append(iou)
-                    for t in recalls:
-                        if iou >= t: recalls[t] += 1
-                    total += 1
-                else: skipped += 1
-            except Exception: skipped += 1
+                sy_hat = F.normalize(model.predictor(b_sv, b_q_ids, b_q_mask), dim=-1)
+                sims_list.append((sy_hat @ sy_ref.T).squeeze(-1))
+            
+            scores = torch.cat(sims_list, dim=0).cpu().numpy().tolist()
+            k = nms(valid_p, scores, config.nms_threshold)
+            if k:
+                iou = temporal_iou(valid_p[k[0]][0], valid_p[k[0]][1], sample["start"], sample["end"])
+                ious.append(iou)
+                for t in recalls:
+                    if iou >= t: recalls[t] += 1
+                total += 1
+            else: skipped += 1
             pbar.update(1)
 
     # Summary

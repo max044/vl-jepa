@@ -52,7 +52,7 @@ def load_video_to_ram(video_path: str) -> dict | None:
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        frames.append(frame) # Keep as BGR for now
     
     cap.release()
     

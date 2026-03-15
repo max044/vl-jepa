@@ -103,22 +103,25 @@ class XEncoder(nn.Module):
         """Optimized preprocessing for a full video on GPU.
         
         Args:
-            video_frames: (T, H, W, 3) uint8 numpy array.
+            video_frames: (T, H, W, 3) uint8 numpy array (BGR from OpenCV).
         Returns:
-            (T, 3, 224, 224) normalized float tensor on device.
+            (T, 3, 224, 224) normalized float16 tensor on device.
         """
         # 1. Single transfer to GPU
-        t = torch.tensor(video_frames, dtype=torch.float32, device=device)
+        t = torch.tensor(video_frames, dtype=torch.float16, device=device)
         
-        # 2. Reshape and normalize (T, H, W, 3) -> (T, 3, H, W)
+        # 2. Convert BGR to RGB on GPU (much faster than CPU)
+        t = t[..., [2, 1, 0]]
+        
+        # 3. Reshape and normalize (T, H, W, 3) -> (T, 3, H, W)
         t = t.permute(0, 3, 1, 2) / 255.0
         
-        # 3. Bulk Resize (T, 3, 224, 224)
+        # 4. Bulk Resize (T, 3, 224, 224)
         t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
         
-        # 4. Normalize
-        mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        # 5. Normalize
+        mean = torch.tensor([0.485, 0.456, 0.406], device=device, dtype=torch.float16).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=device, dtype=torch.float16).view(1, 3, 1, 1)
         t = (t - mean) / std
         
         return t
