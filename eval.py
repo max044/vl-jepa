@@ -27,6 +27,12 @@ from vljepa.dataset import CharadesSTADataset
 from vljepa.models import VLJepa
 from vljepa.utils import temporal_iou, get_video_duration
 
+try:
+    from huggingface_hub import hf_hub_download
+    HAS_HF_HUB = True
+except ImportError:
+    HAS_HF_HUB = False
+
 from infer import retrieve_moments
 
 
@@ -125,6 +131,29 @@ def main():
         caption = sample["caption"]
         gt_start = sample["start"]
         gt_end = sample["end"]
+
+        # ── Lazy Loading ──────────────────────────────────────────
+        if not __import__("os").path.exists(video_path) and config.hf_dataset_id:
+            if HAS_HF_HUB:
+                try:
+                    video_id = sample.get("video_id")
+                    if not video_id: # fallback for annotations loaded from file
+                        video_id = __import__("os").path.basename(video_path).replace(".mp4", "")
+                    
+                    video_path = hf_hub_download(
+                        repo_id=config.hf_dataset_id,
+                        filename=f"{video_id}.mp4",
+                        repo_type="dataset",
+                        local_dir=config.videos_dir,
+                    )
+                except Exception as e:
+                    print(f"❌ Error downloading {video_id}: {e}")
+                    skipped += 1
+                    continue
+            else:
+                print("❌ Error: huggingface_hub not installed, cannot lazy load.")
+                skipped += 1
+                continue
 
         # Use the ground-truth caption as the query for moment retrieval
         try:
