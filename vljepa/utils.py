@@ -5,56 +5,51 @@ import numpy as np
 import torch
 
 
-def load_video_frames(
-    video_path: str,
-    start_sec: float = 0.0,
-    end_sec: float | None = None,
-    num_frames: int = 16,
-) -> list[np.ndarray] | None:
-    """Legacy wrapper for load_video_seg_from_cap."""
+def load_video_to_ram(video_path: str) -> dict | None:
+    """Load an entire video into a numpy array in RAM.
+    
+    Returns:
+        dict with 'frames' (N, H, W, 3) and 'fps', or None.
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None
-    res = load_video_seg_from_cap(cap, start_sec, end_sec, num_frames)
-    cap.release()
-    return res
-
-
-def load_video_seg_from_cap(
-    cap: cv2.VideoCapture,
-    start_sec: float,
-    end_sec: float | None,
-    num_frames: int = 16,
-) -> list[np.ndarray] | None:
-    """Load frames from an already open VideoCapture."""
+    
     fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    if fps <= 0 or total_frames <= 0:
+    frames = []
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    
+    cap.release()
+    
+    if not frames:
         return None
+        
+    return {
+        "frames": np.array(frames),
+        "fps": fps
+    }
 
-    duration = total_frames / fps
-    if end_sec is None:
-        end_sec = duration
 
+def sample_frames_from_array(video_data: dict, start_sec: float, end_sec: float, num_frames: int = 16) -> list[np.ndarray] | None:
+    """Sample frames from a pre-loaded numpy array."""
+    frames = video_data["frames"]
+    fps = video_data["fps"]
+    total_frames = len(frames)
+    
     start_frame = max(0, int(start_sec * fps))
     end_frame = min(total_frames - 1, int(end_sec * fps))
-
+    
     if end_frame <= start_frame:
         return None
+        
+    indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
+    return [frames[idx] for idx in indices]
 
-    n_available = end_frame - start_frame + 1
-    n_sample = min(num_frames, n_available)
-    indices = np.linspace(start_frame, end_frame, n_sample, dtype=int)
-
-    frames = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-        ret, frame = cap.read()
-        if ret:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    return frames if frames else None
 
 
 def get_video_duration(video_path: str) -> float:
