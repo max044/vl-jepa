@@ -83,20 +83,43 @@ def main():
     model = VLJepa(config)
 
     checkpoint_path = args.checkpoint
+    
+    # 1. Basic validation
+    if not checkpoint_path:
+        print("❌ Error: Checkpoint path is empty. Provide --checkpoint or set CHECKPOINT env var.")
+        return
+
+    # 2. Handle W&B Artifacts
     if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
         if use_wandb:
             print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
-            artifact = wandb.run.use_artifact(checkpoint_path, type='model')
-            artifact_dir = artifact.download()
-            checkpoint_path = os.path.join(artifact_dir, "best.pth")
-            if not os.path.exists(checkpoint_path):
-                pths = [f for f in os.listdir(artifact_dir) if f.endswith(".pth")]
-                if pths:
-                    checkpoint_path = os.path.join(artifact_dir, pths[0])
+            try:
+                artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+                artifact_dir = artifact.download()
+                
+                # Look for .pth files in the downloaded dir
+                potential_pths = [os.path.join(artifact_dir, f) for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                if not potential_pths:
+                    print(f"❌ Error: No .pth files found in artifact directory: {artifact_dir}")
+                    return
+                
+                # Preference for best.pth, else first .pth found
+                best_pth = os.path.join(artifact_dir, "best.pth")
+                checkpoint_path = best_pth if os.path.exists(best_pth) else potential_pths[0]
+                print(f"✅ Using artifact checkpoint: {checkpoint_path}")
+            except Exception as e:
+                print(f"❌ Failed to download W&B artifact: {e}")
+                return
         else:
-            print("❌ W&B disabled, cannot download artifact.")
+            print("❌ W&B is disabled, cannot download artifact.")
             return
 
+    # 3. Final existance check
+    if not os.path.exists(checkpoint_path):
+        print(f"❌ Error: Checkpoint file not found: {checkpoint_path}")
+        return
+
+    print(f"📂 Loading weights from: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
