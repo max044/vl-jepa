@@ -105,7 +105,7 @@ class CharadesSTADataset(Dataset):
                 caption = item.get("query", "") or item.get("description", "")
 
                 video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
-                if os.path.exists(video_path) and caption:
+                if (os.path.exists(video_path) or self.config.hf_dataset_id) and caption:
                     self.samples.append({
                         "video_path": video_path,
                         "video_id": video_id,
