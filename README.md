@@ -79,47 +79,42 @@ Train on GPU with [Vast.ai](https://vast.ai/) (~$0.50–2/h for A100/H100).
 ### Quick Start
 
 ```bash
-# 1. On the cloud instance — bootstrap
+# 1. On the cloud instance — bootstrap the system
 curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
 
-# 2. Configure W&B
+# 2. Configure environment
 cd ~/vl-jepa
 cp .env.example .env
-nano .env  # Set WANDB_API_KEY (get it at https://wandb.ai/authorize)
+nano .env  # Set WANDB_API_KEY and HF_TOKEN
 
-# 3. Download Data (Fastest: Hugging Face with hf_transfer)
-uv add hf_transfer
-hf auth login --token "$HF_TOKEN"
-HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download max044/Charades_v1_480 --local-dir data --repo-type dataset
-
-or (Direct S3 with multi-connection aria2c)
-
-sudo apt-get update && sudo apt-get install -y aria2
-aria2c -x 16 -s 16 -d data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip
-unzip data/Charades_v1_480.zip -d data/
+# 3. Load Annotations (Lightweight)
+uv run download_annotations.py
 
 # 4. Launch training
+# Note: Videos are streamed/lazy-loaded from Hugging Face Hub during training 
+# if not found locally, so training starts instantly without the 15GB download.
 bash scripts/train_cloud.sh
 ```
+
+### ⚡ Accelerated Dataset Loading
+If you prefer to download the full dataset upfront for maximum iteration speed:
+- **Hugging Face Hub (Fastest)**: `uv add hf_transfer && HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download max044/Charades_v1_480 --local-dir data --repo-type dataset`
+- **S3 (Reliable)**: `sudo apt update && sudo apt install -y aria2 && aria2c -x 16 -s 16 -d data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip`
 
 ### W&B Experiment Tracking
 
 All training runs are tracked on [Weights & Biases](https://wandb.ai/):
 
-- **Metrics**: loss, InfoNCE, learning rate (per step + per epoch)
-- **System**: GPU utilization, memory usage (automatic)
-- **Model versioning**: checkpoints uploaded as W&B Artifacts (`vl-jepa-best`,
-  `vl-jepa-last`) — every version is preserved and downloadable
+- **Metrics**: train/loss, val/loss, learning rate, GPU usage.
+- **Early Stopping**: Monitored on `val/loss`.
+- **Checkpoint naming**: Saved as unique W&B Artifacts named `model-{run_id}` with `best` and `latest` aliases.
 
 ```bash
-# Train with W&B (default)
-uv run train.py --device cuda --wandb-project vl-jepa
+# Train with custom W&B run name
+uv run train.py --device cuda --wandb-run-name "my-experiment"
 
-# Train without W&B
-uv run train.py --device cuda --no-wandb
-
-# Custom W&B run name
-uv run train.py --device cuda --wandb-run-name "exp-lr3e4-bs16"
+# Resume training or evaluate from W&B Artifact
+CHECKPOINT="max044/vl-jepa/model-xyz:best" bash scripts/eval_cloud.sh
 ```
 
 ### Environment Variables
