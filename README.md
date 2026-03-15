@@ -1,170 +1,85 @@
-# VL-JEPA: Simplified Video-Language Alignment
+# 🎥 VL-JEPA: Fast Video-Language Retrieval
 
-A simplified implementation of the Video-Language Joint Embedding Predictive
-Architecture (VL-JEPA) for **Temporal Moment Retrieval** (Temporal Grounding).
+A streamlined implementation of **Video-Language Joint Embedding Predictive Architecture** (VL-JEPA) for **Temporal Moment Retrieval**.
 
-This project uses **V-JEPA 2** for video understanding and **Qwen 2.5 0.5B** as
-a predictor to align video features with language queries in a high-dimensional
-embedding space.
+Instead of "describing" videos (generative), this model learns to **align** video segments with text in a shared embedding space. This makes searching through hours of video nearly instantaneous.
 
-## 🚀 Architecture
+---
 
-The model follows the JEPA framework by aligning video features (X) and text
-descriptions (Y) through a predictor (P):
+## 🧠 Architecture
+- **Vision (X)**: Frozen `V-JEPA 2` (ViT-L).
+- **Text (Y)**: Frozen `MiniLM` (all-MiniLM-L6-v2).
+- **Alignment**: `Qwen 2.5 0.5B` tuned with **LoRA** (predicts text embeddings from video features).
 
-- **X-Encoder (Video)**: Frozen **V-JEPA 2** (ViT-L). High-fidelity hierarchical
-  video features.
-- **Y-Encoder (Text)**: Frozen **MiniLM** (all-MiniLM-L6-v2). Compact and
-  efficient semantic text embeddings.
-- **Predictor (Alignment)**: **Qwen 2.5 0.5B** with **LoRA** (Low-Rank
-  Adaptation). Learns to predict the target text embedding from the joint
-  video+query representation.
+---
 
-## 🛠️ Installation
+## ⚡ Quick Start (Local)
 
-This project uses `uv` for lightning-fast dependency management.
+1. **Install** (requires [uv](https://astral.sh/uv)):
+   ```bash
+   git clone https://github.com/max044/vl-jepa.git
+   cd vl-jepa
+   uv sync
+   ```
 
-```bash
-# Clone the repository
-git clone https://github.com/max044/vl-jepa.git
-cd vl-jepa
+2. **Prepare Data**:
+   ```bash
+   uv run download_annotations.py
+   # Place your Charades videos in data/Charades_v1_480/
+   ```
 
-# Create environment and install dependencies
-uv sync
-```
+3. **Train**:
+   ```bash
+   uv run train.py --device mps # or cuda
+   ```
 
-## 📊 Data Preparation
+---
 
-The model is trained on the **Charades-STA** dataset for temporal grounding.
+## ☁️ Cloud GPU Training (Vast.ai / RunPod)
 
-1. **Videos**: Download
-   [Charades v1](https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip)
-   and place them in `data/Charades_v1_480`.
-2. **Annotations**: Use `download_annotations.py` to download the annotations.
+We use **Lazy-Loading**: the training starts instantly. Videos are streamed from Hugging Face Hub only when needed.
 
-Structure:
+1. **Initialize Instance**:
+   ```bash
+   curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
+   ```
 
-```text
-data/
-├── Charades_v1_480/      # Video files (.mp4)
-├── charades_sta_train.txt
-└── charades_sta_test.txt
-```
+2. **Configure Environment**:
+   ```bash
+   cp .env.example .env
+   nano .env  # Add WANDB_API_KEY and HF_TOKEN
+   ```
 
-## 🏋️ Training
+3. **Run Training**:
+   ```bash
+   uv run download_annotations.py
+   bash scripts/train_cloud.sh
+   ```
 
-Start training with default hyperparameters:
+4. **Run Final Test**:
+   ```bash
+   # Replace ID with your W&B run ID
+   CHECKPOINT="max044/vl-jepa/model-ID:best" bash scripts/eval_cloud.sh
+   ```
 
-```bash
-# Regular training (local, MPS/CPU)
-uv run train.py
+---
 
-# Debug mode (small subset, only 2 epochs)
-uv run train.py --debug --device mps
-```
+## 🔍 How it Works
 
-### Key Training Features:
+1. **Training**: The model takes a video segment and its description. It uses **InfoNCE loss** to push the "correct" pairs together in the embedding space.
+2. **Inference**: To find a moment (e.g., *"person opening a door"*):
+    - We slide windows of various sizes (2s, 4s, 8s, 16s) across the video.
+    - We compare each window's embedding to the query embedding.
+    - We return the windows with the highest similarity scores.
 
-- **Bidirectional InfoNCE Loss**: Maximizes mutual information between predicted
-  and target embeddings.
-- **LoRA Tuning**: Only 0.2% of the predictor parameters (Qwen) are trained,
-  making it extremely memory-efficient.
-- **MPS Support**: Optimized for Mac M1/M2/M3 chips.
-- **W&B Integration**: Full experiment tracking with model versioning.
+---
 
-## ☁️ Cloud GPU Training
+## 📊 Monitoring
+- **W&B**: Every run logs loss curves, GPU usage, and uploads checkpoints as tagged artifacts (`best`, `latest`).
+- **Early Stopping**: Automated based on `val/loss`.
+- **Metrics**: We use **mIoU** and **Recall@1** to measure how accurately the model finds the ground-truth timestamps.
 
-Train on GPU with [Vast.ai](https://vast.ai/) (~$0.50–2/h for A100/H100).
-
-### Quick Start
-
-```bash
-# 1. On the cloud instance — bootstrap the system
-curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
-
-# 2. Configure environment
-cd ~/vl-jepa
-cp .env.example .env
-nano .env  # Set WANDB_API_KEY and HF_TOKEN
-
-# 3. Load Annotations (Lightweight)
-uv run download_annotations.py
-
-# 4. Launch training
-# Note: Videos are streamed/lazy-loaded from Hugging Face Hub during training 
-# if not found locally, so training starts instantly without the 15GB download.
-bash scripts/train_cloud.sh
-```
-
-### ⚡ Accelerated Dataset Loading
-If you prefer to download the full dataset upfront for maximum iteration speed:
-- **Hugging Face Hub (Fastest)**: `uv add hf_transfer && HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download max044/Charades_v1_480 --local-dir data --repo-type dataset`
-- **S3 (Reliable)**: `sudo apt update && sudo apt install -y aria2 && aria2c -x 16 -s 16 -d data/ https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip`
-
-### W&B Experiment Tracking
-
-All training runs are tracked on [Weights & Biases](https://wandb.ai/):
-
-- **Metrics**: train/loss, val/loss, learning rate, GPU usage.
-- **Early Stopping**: Monitored on `val/loss`.
-- **Checkpoint naming**: Saved as unique W&B Artifacts named `model-{run_id}` with `best` and `latest` aliases.
-
-```bash
-# Train with custom W&B run name
-uv run train.py --device cuda --wandb-run-name "my-experiment"
-
-# Resume training or evaluate from W&B Artifact
-CHECKPOINT="max044/vl-jepa/model-xyz:best" bash scripts/eval_cloud.sh
-```
-
-### Environment Variables
-
-| Variable        | Description                                          | Required     |
-| --------------- | ---------------------------------------------------- | ------------ |
-| `WANDB_API_KEY` | W&B API key ([get here](https://wandb.ai/authorize)) | For tracking |
-| `WANDB_PROJECT` | W&B project name (default: `vl-jepa`)                | No           |
-| `WANDB_ENTITY`  | W&B team/organization                                | No           |
-| `EPOCHS`        | Override epoch count                                 | No           |
-| `BATCH_SIZE`    | Override batch size                                  | No           |
-
-## 🔍 Inference (Moment Retrieval)
-
-Once trained, you can use the model to find specific moments in a video based on
-a text query. The script uses a sliding window approach with NMS to find the
-best matching segments.
-
-```bash
-# Example: Local inference
-uv run infer.py \
-    --video data/Charades_v1_480/3MSZA.mp4 \
-    --query "person turns on the light" \
-    --checkpoint checkpoints/best.pth \
-    --device mps
-```
-
-## 🔍 Implementation Details
-
-Unlike standard VLM (Visual-Language Models) that use generative heads, this
-VL-JEPA implementation focuses on **embedding alignment**. This makes it an
-order of magnitude faster for retrieval tasks (search) as embeddings can be
-pre-computed and indexed using vector databases (Faiss, Milvus, Chroma).
-
-## 📚 References
-
-This implementation is based on the official VL-JEPA paper:
-
-```bibtex
-@misc{chen2026vljepajointembeddingpredictive,
-      title={VL-JEPA: Joint Embedding Predictive Architecture for Vision-language}, 
-      author={Delong Chen and Mustafa Shukor and Theo Moutakanni and Willy Chung and Jade Yu and Tejaswi Kasarla and Yejin Bang and Allen Bolourchi and Yann LeCun and Pascale Fung},
-      year={2026},
-      eprint={2512.10942},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2512.10942}, 
-}
-```
+---
 
 ## 📄 License
-
 MIT
