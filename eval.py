@@ -12,6 +12,10 @@ Usage:
 
 import argparse
 import os
+
+# Enable fast HF downloads if hf_transfer is installed
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
 from collections import defaultdict
 import torch
 import torch.nn.functional as F
