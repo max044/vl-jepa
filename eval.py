@@ -56,8 +56,8 @@ def main():
         else:
             wandb.init(project=args.wandb_project, job_type="eval", tags=["eval"])
 
-    # Load model & move to half precision for A100 speedup
-    model = VLJepa(config)
+    # Load model & move to device/half precision for A100 speedup
+    model = VLJepa(config).to(config.device)
     if config.device == "cuda":
         model = model.half()
     
