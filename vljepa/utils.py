@@ -5,6 +5,36 @@ import numpy as np
 import torch
 
 
+def load_video_frames(
+    video_path: str,
+    start_sec: float = 0.0,
+    end_sec: float | None = None,
+    num_frames: int = 16,
+) -> list[np.ndarray] | None:
+    """Legacy wrapper for backward compatibility."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if fps <= 0: return None
+    
+    start_frame = max(0, int(start_sec * fps))
+    end_frame = min(total_frames - 1, int(end_sec * fps))
+    if end_frame <= start_frame: return None
+    
+    indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
+    frames = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        ret, frame = cap.read()
+        if ret: frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    
+    cap.release()
+    return frames if frames else None
+
+
 def load_video_to_ram(video_path: str) -> dict | None:
     """Load an entire video into a numpy array in RAM.
     
