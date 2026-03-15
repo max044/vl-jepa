@@ -11,26 +11,26 @@ def load_video_frames(
     end_sec: float | None = None,
     num_frames: int = 16,
 ) -> list[np.ndarray] | None:
-    """Load uniformly sampled RGB frames from a video segment.
-
-    Args:
-        video_path: path to .mp4 file
-        start_sec: start of segment in seconds
-        end_sec: end of segment in seconds (None = end of video)
-        num_frames: number of frames to sample
-
-    Returns:
-        List of RGB numpy arrays (H, W, 3), or None on failure.
-    """
+    """Legacy wrapper for load_video_seg_from_cap."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None
+    res = load_video_seg_from_cap(cap, start_sec, end_sec, num_frames)
+    cap.release()
+    return res
 
+
+def load_video_seg_from_cap(
+    cap: cv2.VideoCapture,
+    start_sec: float,
+    end_sec: float | None,
+    num_frames: int = 16,
+) -> list[np.ndarray] | None:
+    """Load frames from an already open VideoCapture."""
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if fps <= 0 or total_frames <= 0:
-        cap.release()
         return None
 
     duration = total_frames / fps
@@ -41,7 +41,6 @@ def load_video_frames(
     end_frame = min(total_frames - 1, int(end_sec * fps))
 
     if end_frame <= start_frame:
-        cap.release()
         return None
 
     n_available = end_frame - start_frame + 1
@@ -55,12 +54,7 @@ def load_video_frames(
         if ret:
             frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 
-    cap.release()
-
-    if len(frames) == 0:
-        return None
-
-    return frames
+    return frames if frames else None
 
 
 def get_video_duration(video_path: str) -> float:
