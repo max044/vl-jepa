@@ -21,6 +21,7 @@ dependencies = [
     "vastai>=0.2.8",
     "pandas>=2.2.0",
     "huggingface-hub>=1.4.1",
+    "python-dotenv>=1.2.2",
 ]
 
 [build-system]

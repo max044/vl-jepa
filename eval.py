@@ -23,6 +23,9 @@ try:
 except ImportError:
     HAS_WANDB = False
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset
 from vljepa.models import VLJepa
