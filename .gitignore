@@ -18,3 +18,4 @@ checkpoints/*
 .env
 wandb/
 artifacts/
+*test_results.md

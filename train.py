@@ -43,6 +43,11 @@ def parse_args():
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--num-workers", type=int, default=None)
+    
+    # Optional features
+    parser.add_argument("--use-regression", action="store_true", help="Enable timestamp regression head")
+    parser.add_argument("--use-learnable-temp", action="store_true", help="Enable learnable InfoNCE temperature")
+
     # W&B arguments
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
     parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
@@ -91,17 +96,24 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, glob
         # Use autocast for mixed precision (if available)
         use_amp = config.device == "cuda" and scaler is not None
         with torch.autocast(device_type="cuda", enabled=use_amp):
-            sy_hat, sy = model(
+            outputs = model(
                 pixel_values,
                 query_tokens["input_ids"],
                 query_tokens["attention_mask"],
                 batch["captions"],
             )
+            
+            # Extract regression targets from batch
+            # b["offset_targets"] is list of [s, e]
+            offset_targets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=config.device)
 
             loss, metrics = vl_jepa_loss(
-                sy_hat, sy,
-                temperature=config.temperature,
+                outputs["sy_hat"], outputs["sy"],
+                temperature=outputs["temperature"],
                 sigreg_weight=config.sigreg_weight,
+                offsets=outputs.get("offsets"),
+                offset_targets=offset_targets if config.use_regression else None,
+                regression_weight=config.regression_loss_weight
             )
 
         if use_amp:
@@ -179,17 +191,23 @@ def validate_one_epoch(model, dataloader, config):
         )
 
         with torch.autocast(device_type="cuda", enabled=config.device == "cuda"):
-            sy_hat, sy = model(
+            outputs = model(
                 pixel_values,
                 query_tokens["input_ids"],
                 query_tokens["attention_mask"],
                 batch["captions"],
             )
 
+            # Extract regression targets from batch
+            offset_targets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=config.device)
+
             loss, metrics = vl_jepa_loss(
-                sy_hat, sy,
-                temperature=config.temperature,
+                outputs["sy_hat"], outputs["sy"],
+                temperature=outputs["temperature"],
                 sigreg_weight=config.sigreg_weight,
+                offsets=outputs.get("offsets"),
+                offset_targets=offset_targets if config.use_regression else None,
+                regression_weight=config.regression_loss_weight
             )
 
         total_loss += metrics["loss/total"]
@@ -210,7 +228,7 @@ def validate_one_epoch(model, dataloader, config):
 
 def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, path):
     """Save a training checkpoint."""
-    torch.save({
+    state = {
         "epoch": epoch,
         "global_step": global_step,
         "predictor_state_dict": model.predictor.state_dict(),
@@ -218,7 +236,10 @@ def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, path)
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
         "loss": loss,
-    }, path)
+    }
+    if hasattr(model, "logit_scale"):
+        state["logit_scale"] = model.logit_scale.data
+    torch.save(state, path)
 
 
 def log_artifact(path, name, artifact_type, metadata=None, aliases=None):
@@ -241,6 +262,10 @@ def load_checkpoint(model, optimizer, scheduler, path, device):
     model.predictor.load_state_dict(ckpt["predictor_state_dict"])
     model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
     
+    if "logit_scale" in ckpt and hasattr(model, "logit_scale"):
+        model.logit_scale.data.copy_(ckpt["logit_scale"])
+        print(f"  Loaded logit_scale: {ckpt['logit_scale'].item():.4f}")
+
     if optimizer is not None and "optimizer_state_dict" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         
@@ -265,9 +290,23 @@ def load_checkpoint(model, optimizer, scheduler, path, device):
 
 def main():
     args = parse_args()
-
-    # Config
+    
+    # Load base config
     config = Config()
+    
+    # Load from YAML if specified (or try default)
+    import yaml
+    base_config_path = os.path.join("configs", "base.yaml")
+    if os.path.exists(base_config_path):
+        print(f"Loading config from {base_config_path}")
+        with open(base_config_path, "r") as f:
+            yaml_config = yaml.safe_load(f)
+            # Filter and update
+            for k, v in yaml_config.items():
+                if hasattr(config, k):
+                    setattr(config, k, v)
+
+    # CLI Overrides (legacy)
     if args.epochs is not None:
         config.epochs = args.epochs
     if args.batch_size is not None:
@@ -280,6 +319,16 @@ def main():
         config.debug = True
     if args.num_workers is not None:
         config.num_workers = args.num_workers
+        
+    # Optional feature overrides
+    if args.use_regression:
+        config.use_regression = True
+    if args.use_learnable_temp:
+        config.use_learnable_temp = True
+
+    # Apply additional overrides if we implement a generic --override
+    # For now, we'll just use the legacy ones above.
+    # To be proactive, let's add a generic override support.
 
     # ── W&B Init ────────────────────────────────────────────
     use_wandb = HAS_WANDB and not args.no_wandb
@@ -289,7 +338,7 @@ def main():
             "entity": args.wandb_entity,
             "name": args.wandb_run_name,
             "config": asdict(config),
-            "tags": ["train", config.device] + (["debug"] if config.debug else []),
+            "tags": [t for t in ["train", config.device] + (["debug"] if config.debug else []) if t],
         }
         
         # Handle Resume Mode

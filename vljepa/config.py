@@ -71,12 +71,18 @@ class Config:
     inference_batch_size: int = 32  # Batch size for sliding window proposals
     top_k: int = 5
 
+    # ── Model Improvements (Optional) ────────────────────
+    use_regression: bool = False
+    regression_loss_weight: float = 1.0
+    use_learnable_temp: bool = False
+
     # ── Debug ───────────────────────────────────────────────
     debug: bool = False
     debug_samples: int = 100
     num_workers: int = 0  # 0 for MPS compatibility
 
-    def __post_init__(self):
+    def auto_detect(self):
+        """Auto-detect device if empty."""
         if not self.device:
             if torch.cuda.is_available():
                 self.device = "cuda"
@@ -84,7 +90,45 @@ class Config:
                 self.device = "mps"
             else:
                 self.device = "cpu"
+        return self
 
+    def __post_init__(self):
+        self.auto_detect()
         # Ensure directories exist
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create a Config from a dictionary, filtering unknown keys."""
+        valid_keys = {f.name for f in field_dict(cls)}
+        filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+        return cls(**filtered_data).auto_detect()
+
+    def apply_overrides(self, overrides: list[str]):
+        """Apply CLI overrides in format 'key=value'."""
+        for override in overrides:
+            if "=" not in override:
+                continue
+            key, value = override.split("=", 1)
+            if not hasattr(self, key):
+                print(f"Warning: Unknown config key '{key}'")
+                continue
+            
+            # Cast to the correct type
+            current_val = getattr(self, key)
+            if isinstance(current_val, bool):
+                new_val = value.lower() in ("true", "1", "yes")
+            elif isinstance(current_val, list):
+                # Simple list casting (comma-separated or single value)
+                if "," in value:
+                    new_val = [type(current_val[0])(v.strip()) for v in value.split(",")]
+                else:
+                    new_val = [type(current_val[0])(value)]
+            else:
+                new_val = type(current_val)(value)
+            
+            setattr(self, key, new_val)
+        return self.auto_detect()
+
+from dataclasses import fields as field_dict

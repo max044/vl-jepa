@@ -45,14 +45,14 @@ class XEncoder(nn.Module):
             pixel_values: (B, C, T, H, W) preprocessed frames (0-1 float, normalized)
         """
         if pixel_values.shape[1] == 3 and pixel_values.shape[2] > 3:
-             # (B, C, T, H, W) -> (B, T, C, H, W)
-             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
+            # (B, C, T, H, W) -> (B, T, C, H, W)
+            pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
 
         try:
             outputs = self.model(pixel_values_videos=pixel_values)
         except TypeError:
-             # Fallback
-             outputs = self.model(pixel_values=pixel_values)
+            # Fallback
+            outputs = self.model(pixel_values=pixel_values)
 
         last_hidden = outputs.last_hidden_state # (B, seq_len, hidden)
         sv = last_hidden.mean(dim=1) # (B, hidden)
@@ -65,29 +65,29 @@ class XEncoder(nn.Module):
 
         padded = []
         for frames in frames_batch:
-             if len(frames) == 0:
-                 t = torch.zeros((16, 3, 224, 224), device=device)
-                 padded.append(t)
-                 continue
+            if len(frames) == 0:
+                t = torch.zeros((16, 3, 224, 224), device=device)
+                padded.append(t)
+                continue
 
-             # Stack to (T, H, W, 3)
-             t = torch.tensor(np.stack(frames), dtype=torch.float32, device=device)
-             
-             # Permute to (T, 3, H, W)
-             t = t.permute(0, 3, 1, 2) / 255.0
-             
-             # Resize
-             t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
-             
-             padded.append(t)
+            # Stack to (T, H, W, 3)
+            t = torch.tensor(np.stack(frames), dtype=torch.float32, device=device)
+            
+            # Permute to (T, 3, H, W)
+            t = t.permute(0, 3, 1, 2) / 255.0
+            
+            # Resize
+            t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
+            
+            padded.append(t)
 
         max_t = max((t.size(0) for t in padded), default=16)
         final_padded = []
         for t in padded:
-             if t.size(0) < max_t:
-                 pad = t[-1:].expand(max_t - t.size(0), -1, -1, -1)
-                 t = torch.cat([t, pad], dim=0)
-             final_padded.append(t)
+            if t.size(0) < max_t:
+                pad = t[-1:].expand(max_t - t.size(0), -1, -1, -1)
+                t = torch.cat([t, pad], dim=0)
+            final_padded.append(t)
         
         # Stack -> (B, T, 3, H, W)
         pixel_values = torch.stack(final_padded, dim=0) 
@@ -167,10 +167,17 @@ class Predictor(nn.Module):
         self.visual_proj = nn.Linear(config.x_dim, config.predictor_dim)
         self.output_proj = nn.Linear(config.predictor_dim, config.embed_dim)
 
+        if config.use_regression:
+            self.regression_head = nn.Sequential(
+                nn.Linear(config.predictor_dim, config.predictor_dim // 2),
+                nn.ReLU(),
+                nn.Linear(config.predictor_dim // 2, 2) # (offset_start, offset_end)
+            )
+
         # Move to device
         self.to(config.device)
 
-    def forward(self, sv: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, sv: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> dict[str, torch.Tensor]:
         B = sv.size(0)
         sv_embeds = self.visual_proj(sv).unsqueeze(1) # (B, 1, predictor_dim)
         
@@ -182,12 +189,12 @@ class Predictor(nn.Module):
         # Qwen2 uses model.embed_tokens
         # We try to access it via property or direct module
         if hasattr(base, "model"):
-             embed_layer = base.model.embed_tokens
+            embed_layer = base.model.embed_tokens
         elif hasattr(base, "embed_tokens"):
-             embed_layer = base.embed_tokens
+            embed_layer = base.embed_tokens
         else:
-             # General fallback for AutoModel
-             embed_layer = base.get_input_embeddings()
+            # General fallback for AutoModel
+            embed_layer = base.get_input_embeddings()
 
         inputs_embeds = embed_layer(input_ids)
         combined_embeds = torch.cat([sv_embeds, inputs_embeds], dim=1)
@@ -198,7 +205,11 @@ class Predictor(nn.Module):
         outputs = self.model(inputs_embeds=combined_embeds, attention_mask=combined_mask)
         last_hidden = outputs.last_hidden_state[:, -1, :]
         
-        return self.output_proj(last_hidden)
+        results = {"sy_hat": self.output_proj(last_hidden)}
+        if hasattr(self, "regression_head"):
+            results["offsets"] = self.regression_head(last_hidden)
+            
+        return results
 
 
 class YEncoder(nn.Module):
@@ -231,22 +242,48 @@ class VLJepa(nn.Module):
         self.predictor = Predictor(config)
         self.y_encoder = YEncoder(config)
 
+        if config.use_learnable_temp:
+            # logit_scale = ln(1/temperature)
+            # init with temperature=0.07 -> logit_scale = ln(1/0.07) ~= 2.659
+            init_val = np.log(1 / config.temperature)
+            self.logit_scale = nn.Parameter(torch.ones([]) * init_val)
+
     def forward(self, pixel_values, query_ids, query_mask, target_texts):
         sv = self.x_encoder(pixel_values)
-        sy_hat = self.predictor(sv, query_ids, query_mask)
+        results = self.predictor(sv, query_ids, query_mask)
+        sy_hat = results["sy_hat"]
         sy = self.y_encoder(target_texts, device=str(pixel_values.device))
-        return sy_hat, sy
+        
+        # Return all outputs for loss calculation
+        return {
+            "sy_hat": sy_hat,
+            "sy": sy,
+            "offsets": results.get("offsets"),
+            "temperature": self.get_temperature()
+        }
+
+    def get_temperature(self):
+        if hasattr(self, "logit_scale"):
+            # CLIP approach: temperature = 1 / exp(logit_scale)
+            # We want to keep it consistent with the config's temperature usage:
+            # loss = InfoNCE(sim / temperature)
+            # sim / temperature = sim * exp(logit_scale)
+            return 1.0 / self.logit_scale.exp()
+        return torch.tensor(self.config.temperature, device=self.config.device)
 
     def encode_video_query(self, pixel_values, query_ids, query_mask):
         sv = self.x_encoder(pixel_values)
-        sy_hat = self.predictor(sv, query_ids, query_mask)
-        return sy_hat
+        results = self.predictor(sv, query_ids, query_mask)
+        return results
 
     def encode_text(self, texts, device="cpu"):
         return self.y_encoder(texts, device=device)
 
     def trainable_parameters(self):
-        return list(self.predictor.parameters()) + list(self.y_encoder.projection.parameters())
+        params = list(self.predictor.parameters()) + list(self.y_encoder.projection.parameters())
+        if hasattr(self, "logit_scale"):
+            params.append(self.logit_scale)
+        return params
 
     def count_parameters(self):
         def _count(m):

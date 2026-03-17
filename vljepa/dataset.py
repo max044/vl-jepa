@@ -144,15 +144,41 @@ class CharadesSTADataset(Dataset):
                 return None
 
         # Load frames from the annotated temporal segment
+        # If use_regression is enabled, we occasionally sample a larger window
+        # to train the regression head.
+        start_sec = sample["start"]
+        end_sec = sample["end"]
+        
+        if self.split == "train" and getattr(self.config, "use_regression", False):
+            # Jitter window: +/- 20% of duration, or fixed 2s
+            dur = end_sec - start_sec
+            jitter = min(2.0, dur * 0.2)
+            
+            # Randomly shift start/end
+            win_start = max(0, start_sec - np.random.uniform(0, jitter))
+            win_end = end_sec + np.random.uniform(0, jitter)
+            
+            # These are the boundaries of the frames we load
+            load_start, load_end = win_start, win_end
+        else:
+            load_start, load_end = start_sec, end_sec
+
         frames = load_video_frames(
             video_path,
-            start_sec=sample["start"],
-            end_sec=sample["end"],
+            start_sec=load_start,
+            end_sec=load_end,
             num_frames=self.config.num_frames,
         )
 
         if frames is None or len(frames) == 0:
             return None
+
+        # Calculate regression targets relative to the loaded window
+        # o_start = (gt_start - win_start) / win_duration
+        # o_end = (gt_end - win_end) / win_duration
+        win_dur = load_end - load_start
+        offset_start = (start_sec - load_start) / win_dur
+        offset_end = (end_sec - load_end) / win_dur
 
         # Use a neutral query for training
         # (VL-JEPA learns to predict the target caption embedding from video + query)
@@ -164,8 +190,9 @@ class CharadesSTADataset(Dataset):
             "query": query,             # neutral text query
             "caption": sample["caption"],  # target caption
             "video_id": sample["video_id"],
-            "start": sample["start"],
-            "end": sample["end"],
+            "start": start_sec,
+            "end": end_sec,
+            "offset_targets": [offset_start, offset_end]
         }
 
 
@@ -182,4 +209,5 @@ def collate_fn(batch: list[dict | None]) -> dict | None:
         "video_ids": [b["video_id"] for b in batch],
         "starts": [b["start"] for b in batch],
         "ends": [b["end"] for b in batch],
+        "offset_targets": [b["offset_targets"] for b in batch],
     }

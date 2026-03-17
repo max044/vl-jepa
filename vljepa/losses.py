@@ -61,28 +61,50 @@ def sigreg_loss(
 
 
 def vl_jepa_loss(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    temperature: float = 0.07,
+    sy_hat: torch.Tensor,
+    sy: torch.Tensor,
+    temperature: float | torch.Tensor = 0.07,
     sigreg_weight: float = 0.1,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    """Combined VL-JEPA training loss.
-
-    Returns:
-        total_loss: scalar tensor for backprop.
-        metrics: dict with breakdown of loss components.
+    offsets: torch.Tensor | None = None,
+    offset_targets: torch.Tensor | None = None,
+    regression_weight: float = 1.0,
+) -> tuple[torch.Tensor, dict]:
+    """Bidirectional InfoNCE loss with optional regression loss.
+    
+    Args:
+        sy_hat: Predicted embeddings (B, D)
+        sy: Target embeddings (B, D)
+        temperature: InfoNCE temperature
+        sigreg_weight: Weight for signature regularization
+        offsets: Predicted offsets (B, 2)
+        offset_targets: Target offsets (B, 2)
+        regression_weight: Weight for regression loss
     """
-    align = infonce_bidirectional(pred, target, temperature)
-    reg_pred = sigreg_loss(pred, sigreg_weight)
-    reg_target = sigreg_loss(target, sigreg_weight)
-
-    total = align + reg_pred + reg_target
-
+    # 1. InfoNCE Loss (bidirectional)
+    infonce = infonce_bidirectional(sy_hat, sy, temperature)
+    
+    # 2. Signature Regularization (optional, helps avoid collapse)
+    # Penalize low variance in embeddings
+    if sy_hat.size(0) > 1:
+        std_hat = sy_hat.std(dim=0).mean()
+        std_y = sy.std(dim=0).mean()
+        sigreg = - (std_hat + std_y)
+    else:
+        sigreg = torch.tensor(0.0, device=sy_hat.device)
+    
+    total_loss = infonce + sigreg_weight * sigreg
+    
     metrics = {
-        "loss/total": total.item(),
-        "loss/infonce": align.item(),
-        "loss/sigreg_pred": reg_pred.item(),
-        "loss/sigreg_target": reg_target.item(),
+        "loss/infonce": infonce.item(),
+        "loss/sigreg": sigreg.item(),
     }
 
-    return total, metrics
+    # 3. Regression Loss (optional)
+    if offsets is not None and offset_targets is not None:
+        reg_loss = F.smooth_l1_loss(offsets, offset_targets)
+        total_loss += regression_weight * reg_loss
+        metrics["loss/regression"] = reg_loss.item()
+    
+    metrics["loss/total"] = total_loss.item()
+    
+    return total_loss, metrics
