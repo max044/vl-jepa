@@ -30,7 +30,7 @@ class Config:
     # Embedding and model dimensions (from paper)
     x_dim: int = 1024              # V-JEPA ViT-L output dim
     predictor_dim: int = 896       # Qwen hidden dim
-    text_dim: int = 768            # Qwen3-Embedding-0.6B output dim (hidden_size)
+    text_dim: int = 1024           # Qwen3-Embedding-0.6B hidden_size
     embed_dim: int = 1536          # Shared embedding space (as per paper)
 
     # ── Video ────────────────────────────────────────────────────────────
