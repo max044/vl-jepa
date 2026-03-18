@@ -17,10 +17,10 @@ class Config:
     clip_model: str = "facebook/vjepa2-vitl-fpc64-256"
 
     # Predictor: Qwen 3.5 0.8B (full fine-tune, no LoRA) - based on VL-JEPA paper
-    # Using Qwen3.5-0.8B as it's newer and more capable than Llama-3.2-1B
+    # Using Qwen3.5-0.8B as it's newer and closer to Llama-3.2-1B in size
     predictor_model: str = "Qwen/Qwen3.5-0.8B"
     use_lora: bool = False  # No LoRA - full fine-tune as per paper
-    predictor_layers: int = 0  # 0 = use all layers, >0 = use only last N layers
+    predictor_layers: int = 8  # Last 8 layers as per paper (Section 3.1)
     use_bidirectional_attention: bool = True  # Disable causal mask as per paper
 
     # Y-Encoder: Qwen3-Embedding-0.6B (trainable) - better than EmbeddingGemma per ablation

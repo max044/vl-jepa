@@ -1,16 +1,16 @@
 """VL-JEPA model components based on official paper architecture.
 
-Architecture:
+Architecture (from VL-JEPA paper Section 3.1):
 - X-Encoder: V-JEPA 2 ViT-L (frozen, ~300M params)
-- Predictor: Qwen 3.5 0.8B (trainable, bi-directional attention)
-- Y-Encoder: Qwen3-Embedding-0.6B (trainable, lr * 0.05)
+- Predictor: Last 8 Transformer layers from Llama-like model, bi-directional attention
+- Y-Encoder: Embedding model (trainable, lr * 0.05)
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, AutoConfig
-from sentence_transformers import SentenceTransformer
+from transformers.modeling_utils import ModuleUtils
 import numpy as np
 from typing import Optional
 
@@ -41,11 +41,7 @@ class XEncoder(nn.Module):
 
     @torch.no_grad()
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Encode video frames.
-
-        Args:
-            pixel_values: (B, C, T, H, W) preprocessed frames (0-1 float, normalized)
-        """
+        """Encode video frames."""
         if pixel_values.shape[1] == 3 and pixel_values.shape[2] > 3:
             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
 
@@ -122,10 +118,13 @@ class QueryEncoder(nn.Module):
 
 
 class Predictor(nn.Module):
-    """Qwen 3.5 0.8B Predictor with bi-directional attention (no LoRA).
+    """Qwen 3.5 0.8B Predictor with bi-directional attention.
     
-    Based on VL-JEPA paper: uses last 8 transformer layers with bi-directional
-    attention to jointly attend over visual and query embeddings.
+    Based on VL-JEPA paper Section 3.1:
+    - Uses last N transformer layers (default: 8)
+    - Disables causal attention mask for bi-directional attention
+    - Linear projections connect to vision and text embeddings
+    - Average pooling on non-[PAD] tokens for output
     """
 
     def __init__(self, config: Config):
@@ -146,11 +145,28 @@ class Predictor(nn.Module):
         )
         
         hidden_size = getattr(model_config, 'hidden_size', 896)
+        num_hidden_layers = getattr(model_config, 'num_hidden_layers', 24)
         
-        num_hidden_layers = getattr(model_config, 'num_hidden_layers', 32)
-        self.use_partial_layers = False
-        self.transformer_layers = None
-        self.num_layers = num_hidden_layers
+        num_layers = config.predictor_layers if config.predictor_layers > 0 else num_hidden_layers
+        start_layer = num_hidden_layers - num_layers if config.predictor_layers > 0 else 0
+        
+        print(f"  Predictor: using layers {start_layer}-{num_hidden_layers-1} ({num_layers} layers)")
+        
+        if config.predictor_layers > 0:
+            self.transformer_layers = nn.ModuleList(
+                list(self.model.model.layers)[start_layer:]
+            )
+            self.norm = self.model.model.norm
+            self.using_partial_layers = True
+        else:
+            self.transformer_layers = None
+            self.using_partial_layers = False
+        
+        self.embed_tokens = self.model.model.embed_tokens
+        self.rotary_emb = self.model.model.rotary_emb
+        
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
         
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
@@ -173,30 +189,54 @@ class Predictor(nn.Module):
         input_ids: torch.Tensor, 
         attention_mask: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        """Forward pass with bi-directional attention."""
+        """Forward pass with bi-directional attention.
+        
+        Visual and query embeddings are concatenated and processed with
+        bi-directional attention (causal mask disabled).
+        """
         B = sv.size(0)
+        device = sv.device
         
         sv_embeds = self.visual_proj(sv).unsqueeze(1)
         
-        if hasattr(self.model, 'embed_tokens'):
-            embed_tokens = self.model.embed_tokens
-        else:
-            embed_tokens = self.model.get_input_embeddings()
-        
-        inputs_embeds = embed_tokens(input_ids)
+        inputs_embeds = self.embed_tokens(input_ids)
         
         combined_embeds = torch.cat([sv_embeds, inputs_embeds], dim=1)
         
-        visual_mask = torch.ones(B, 1, device=sv.device, dtype=attention_mask.dtype)
+        visual_mask = torch.ones(B, 1, device=device, dtype=attention_mask.dtype)
         combined_mask = torch.cat([visual_mask, attention_mask], dim=1)
         
-        outputs = self.model(
-            inputs_embeds=combined_embeds,
-            attention_mask=combined_mask,
-        )
-        last_hidden = outputs.last_hidden_state
+        seq_len = combined_embeds.size(1)
+        position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(B, -1)
         
-        pooled = last_hidden.mean(dim=1)
+        hidden_states = combined_embeds
+        
+        if self.using_partial_layers:
+            position_embeddings = self.rotary_emb(hidden_states, position_ids)
+            
+            cos = position_embeddings[0].unsqueeze(0)
+            sin = position_embeddings[1].unsqueeze(0)
+            
+            for layer in self.transformer_layers:
+                hidden_states = layer(
+                    hidden_states,
+                    attention_mask=combined_mask,
+                    position_ids=position_ids,
+                    position_embeddings=(cos, sin),
+                )[0]
+            
+            batch_indices = torch.arange(B, device=device)
+            non_pad_mask = combined_mask.bool()
+            sum_embeddings = (hidden_states * non_pad_mask.unsqueeze(-1)).sum(dim=1)
+            sum_mask = non_pad_mask.sum(dim=1, keepdim=True).float()
+            pooled = sum_embeddings / sum_mask.clamp(min=1)
+        else:
+            outputs = self.model(
+                inputs_embeds=combined_embeds,
+                attention_mask=combined_mask,
+            )
+            hidden_states = outputs.last_hidden_state
+            pooled = hidden_states.mean(dim=1)
         
         results = {"sy_hat": self.output_proj(pooled)}
         if hasattr(self, "regression_head"):
@@ -232,7 +272,7 @@ class YEncoder(nn.Module):
         self.model.eval()
         
         model_config = AutoConfig.from_pretrained(config.text_model, trust_remote_code=True)
-        text_hidden = getattr(model_config, 'hidden_size', 768)
+        text_hidden = getattr(model_config, 'hidden_size', 1024)
         
         self.projection = nn.Linear(text_hidden, config.embed_dim)
         
