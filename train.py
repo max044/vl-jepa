@@ -320,13 +320,13 @@ def main():
         config.lr = args.lr
     if args.device is not None:
         config.device = args.device
-if args.debug:
-    config.debug = True
-if args.debug_samples is not None:
-    config.debug_samples = args.debug_samples
+    if args.debug:
+        config.debug = True
+    if args.debug_samples is not None:
+        config.debug_samples = args.debug_samples
     if args.num_workers is not None:
         config.num_workers = args.num_workers
-        
+    
     # Optional feature overrides
     if args.use_regression:
         config.use_regression = True
