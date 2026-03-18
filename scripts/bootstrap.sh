@@ -71,7 +71,7 @@ fi
 
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "▸ Logging into Hugging Face..."
-    uvx --from huggingface_hub huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
+    uv run python -c "from huggingface_hub import login; login(token='$HF_TOKEN', add_to_git_credential=True)"
     echo "  ✓ HF configured"
 fi
 
@@ -97,7 +97,7 @@ else
     # Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
     
     # On installe hf_transfer pour un téléchargement Rust multi-threads ultra rapide
-    HF_HUB_ENABLE_HF_TRANSFER=1 uvx --from "huggingface_hub[hf_transfer]" huggingface-cli download "$HF_DATASET_ID" --local-dir data --repo-type dataset
+    HF_HUB_ENABLE_HF_TRANSFER=1 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$HF_DATASET_ID', repo_type='dataset', local_dir='data')"
     
     echo "✓ Dataset ready in data/"
 fi
