@@ -16,38 +16,40 @@ class Config:
     # X-Encoder: V-JEPA 2 ViT-L (frozen, ~300M)
     clip_model: str = "facebook/vjepa2-vitl-fpc64-256"
 
-    # Predictor: Qwen 2.5 0.5B (LoRA)
-    predictor_model: str = "Qwen/Qwen2.5-0.5B"
-    use_lora: bool = True
-    lora_r: int = 64
-    lora_alpha: int = 128
-    lora_dropout: float = 0.05
-    lora_target_modules: list[str] = field(default_factory=lambda: ["q_proj", "v_proj"])
+    # Predictor: Qwen 3.5 0.8B (full fine-tune, no LoRA) - based on VL-JEPA paper
+    # Using Qwen3.5-0.8B as it's newer and more capable than Llama-3.2-1B
+    predictor_model: str = "Qwen/Qwen3.5-0.8B"
+    use_lora: bool = False  # No LoRA - full fine-tune as per paper
+    predictor_layers: int = 0  # 0 = use all layers, >0 = use only last N layers
+    use_bidirectional_attention: bool = True  # Disable causal mask as per paper
 
-    # Y-Encoder: MiniLM (frozen, ~22M)
-    text_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Y-Encoder: Qwen3-Embedding-0.6B (trainable) - better than EmbeddingGemma per ablation
+    text_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    y_encoder_lr_multiplier: float = 0.05  # LR multiplier for Y-Encoder as per paper
 
-    # Embedding and model dimensions
-    x_dim: int = 1024         # V-JEPA ViT-L output dim
-    predictor_dim: int = 896  # Qwen 2.5 0.5B hidden dim
-    text_dim: int = 384       # MiniLM-L6-v2 output dim
-    embed_dim: int = 384      # Shared projection target
+    # Embedding and model dimensions (from paper)
+    x_dim: int = 1024              # V-JEPA ViT-L output dim
+    predictor_dim: int = 896       # Qwen hidden dim
+    text_dim: int = 768            # Qwen3-Embedding-0.6B output dim (hidden_size)
+    embed_dim: int = 1536          # Shared embedding space (as per paper)
 
     # ── Video ────────────────────────────────────────────────────────────
     num_frames: int = 16
     frame_size: int = 224     # V-JEPA input resolution
 
     # ── Training ─────────────────────────────────────────────────────────
-    batch_size: int = 4       # Start small (increase if GPU RAM allows)
-    lr: float = 3e-4
-    weight_decay: float = 0.01
+    batch_size: int = 2       # Reduced due to larger model (Qwen3.5-0.8B)
+    grad_accumulation: int = 2  # Effective batch = 4
+    lr: float = 1e-4          # Lower LR for larger model
+    weight_decay: float = 0.05
     epochs: int = 20
-    warmup_steps: int = 200
+    warmup_steps: int = 500
     grad_clip: float = 1.0
+    dtype: str = "bf16"       # BF16 for better numerical stability
 
     # Loss
     temperature: float = 0.07
-    sigreg_weight: float = 0.1
+    sigreg_weight: float = 0.1  # SIGReg weight - penalizes representation collapse
 
     # ── Data ────────────────────────────────────────────────
     data_dir: str = "./data"
@@ -78,6 +80,9 @@ class Config:
     use_regression: bool = False
     regression_loss_weight: float = 1.0
     use_learnable_temp: bool = False
+    
+    # ── Query Tokenization ───────────────────────────────
+    query_max_length: int = 512  # Max query tokens (as per paper)
 
     # ── Debug ───────────────────────────────────────────────
     debug: bool = False
@@ -93,6 +98,8 @@ class Config:
                 self.device = "mps"
             else:
                 self.device = "cpu"
+        if self.device == "mps" and self.dtype == "bf16":
+            self.dtype = "fp16"
         return self
 
     def __post_init__(self):

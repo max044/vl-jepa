@@ -31,7 +31,7 @@ load_dotenv()
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
-from vljepa.losses import vl_jepa_loss
+from vljepa.losses import vl_jepa_loss, SIGReg
 
 
 def parse_args():
@@ -67,7 +67,7 @@ def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
 
 
-def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, global_step, scaler=None):
+def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, global_step, scaler=None, sigreg=None, grad_accum=1):
     """Run one training epoch."""
     model.predictor.train()
     model.y_encoder.projection.train()
@@ -76,26 +76,23 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, glob
     total_infonce = 0.0
     num_batches = 0
     start_time = time.time()
+    
+    optimizer.zero_grad()
 
     for batch_idx, batch in enumerate(dataloader):
         if batch is None:
             continue
 
-        # Preprocess frames using CLIP processor
         pixel_values = model.x_encoder.preprocess_frames(
             batch["frames"], device=config.device
         )
 
-        # Tokenize queries
         query_tokens = model.query_encoder.tokenize(
             batch["queries"], device=config.device
         )
 
-        optimizer.zero_grad()
-
-        # Use autocast for mixed precision (if available)
         use_amp = config.device == "cuda" and scaler is not None
-        with torch.autocast(device_type="cuda", enabled=use_amp):
+        with torch.autocast(device_type="cuda", enabled=use_amp, dtype=torch.bfloat16):
             outputs = model(
                 pixel_values,
                 query_tokens["input_ids"],
@@ -103,38 +100,45 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, glob
                 batch["captions"],
             )
             
-            # Extract regression targets from batch
-            # b["offset_targets"] is list of [s, e]
-            offset_targets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=config.device)
+            offset_targets = batch["offset_targets"]
+            if isinstance(offset_targets, list):
+                offset_targets = torch.tensor(offset_targets, dtype=torch.float32, device=config.device)
 
             loss, metrics = vl_jepa_loss(
                 outputs["sy_hat"], outputs["sy"],
                 temperature=outputs["temperature"],
                 sigreg_weight=config.sigreg_weight,
                 offsets=outputs.get("offsets"),
-                offset_targets=offset_targets if config.use_regression else None,
-                regression_weight=config.regression_loss_weight
+                offset_targets=offset_targets if config.use_regression and offset_targets is not None else None,
+                regression_weight=config.regression_loss_weight,
+                sigreg_module=sigreg
             )
+            
+            loss = loss / grad_accum
 
         if use_amp:
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), config.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
         else:
             loss.backward()
+        
+        if (batch_idx + 1) % grad_accum == 0 or batch_idx == len(dataloader) - 1:
+            if use_amp:
+                scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), config.grad_clip)
-            optimizer.step()
+            
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            
+            optimizer.zero_grad()
+            scheduler.step()
 
-        # Update scheduler after optimizer step
-        scheduler.step()
-
-        total_loss += metrics["loss/total"]
+        total_loss += metrics["loss/total"] * grad_accum
         total_infonce += metrics["loss/infonce"]
         num_batches += 1
 
-        # ── W&B: log per-step metrics ───────────────────────
         if HAS_WANDB and wandb.run:
             wandb.log({
                 "train/loss": metrics["loss/total"],
@@ -355,14 +359,15 @@ def main():
     print(f"Device: {config.device}")
     print(f"Debug: {config.debug}")
     print(f"Epochs: {config.epochs}, Batch size: {config.batch_size}, LR: {config.lr}")
+    print(f"Grad Accumulation: {config.grad_accumulation}")
+    print(f"Effective Batch Size: {config.batch_size * config.grad_accumulation}")
+    print(f"Dtype: {config.dtype}")
     print()
 
-    # Model
     print("Loading models...")
     model = VLJepa(config)
-    model.to(config.device)  # Move entire model (including frozen encoders)
+    model.to(config.device)
 
-    # Print parameter counts
     param_counts = model.count_parameters()
     total_trainable = sum(v["trainable"] for v in param_counts.values())
     print(f"\nParameter counts:")
@@ -370,12 +375,11 @@ def main():
         print(f"  {name}: {counts['total']:,} total, {counts['trainable']:,} trainable")
     print(f"  TOTAL trainable: {total_trainable:,}\n")
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(
-        model.trainable_parameters(),
-        lr=config.lr,
-        weight_decay=config.weight_decay,
-    )
+    g1 = {"params": model.trainable_parameters_predictor(), "lr": config.lr, "weight_decay": config.weight_decay}
+    g2 = {"params": model.trainable_parameters_y_encoder(), "lr": config.lr * config.y_encoder_lr_multiplier, "weight_decay": 0.0}
+    optimizer = torch.optim.AdamW([g1, g2])
+    
+    print(f"Optimizer: Predictor LR={config.lr}, Y-Encoder LR={config.lr * config.y_encoder_lr_multiplier}")
 
     # Dataset
     print("Loading training dataset...")
@@ -454,8 +458,12 @@ def main():
         else:
             print(f"⚠ Could not find checkpoint: {args.checkpoint}. Starting from scratch.")
 
-    # Mixed precision scaler (CUDA only)
-    scaler = torch.amp.GradScaler() if config.device == "cuda" else None
+    sigreg = None
+    if config.sigreg_weight > 0:
+        sigreg = SIGReg().to(config.device)
+        print(f"SIGReg initialized (weight={config.sigreg_weight})")
+
+    scaler = torch.amp.GradScaler('cuda', enabled=config.device == "cuda") if config.device == "cuda" else None
 
     # Training loop
     best_loss = float("inf")
@@ -477,7 +485,8 @@ def main():
         model.eval()
         
         result = train_one_epoch(
-            model, train_loader, optimizer, scheduler, config, epoch, global_step, scaler
+            model, train_loader, optimizer, scheduler, config, epoch, global_step, scaler,
+            sigreg=sigreg, grad_accum=config.grad_accumulation
         )
 
         global_step += result["num_batches"]
