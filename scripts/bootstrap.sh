@@ -71,9 +71,10 @@ fi
 
 if [ -n "${HF_TOKEN:-}" ]; then
     echo "▸ Logging into Hugging Face..."
-    uvx huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
+    uvx --from huggingface_hub huggingface-cli login --token "$HF_TOKEN" --add-to-git-credential
     echo "  ✓ HF configured"
 fi
+
 
 # ── 7. Download Data from HF ──────────────────────────────────
 # On utilise maintenant exclusivement le repo HF de l'utilisateur
