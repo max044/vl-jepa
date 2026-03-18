@@ -98,12 +98,9 @@ else
     
     # On installe hf_transfer pour un téléchargement Rust multi-threads ultra rapide
     uv pip install hf_transfer
-    HF_HUB_ENABLE_HF_TRANSFER=1 uv run python -c "
-import os
-from huggingface_hub import snapshot_download, configure_http_backend
-import httpx
-client = httpx.Client(timeout=httpx.Timeout(120.0))
-configure_http_backend(client=client)
+    echo "▸ Starting download (this may take a while to list 10k files)..."
+    HF_HUB_ENABLE_HF_TRANSFER=1 HF_HUB_READ_TIMEOUT=300 uv run python -c "
+from huggingface_hub import snapshot_download
 snapshot_download(repo_id='$HF_DATASET_ID', repo_type='dataset', local_dir='data')
 "
 
