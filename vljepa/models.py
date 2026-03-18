@@ -151,18 +151,30 @@ class Predictor(nn.Module):
         
         print(f"  Predictor: using layers {start_layer}-{num_hidden_layers-1} ({num_layers} layers)")
         
+        # Get layers - handle different model structures
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+            layers = self.model.model.layers
+            embed_tokens = self.model.model.embed_tokens
+            rotary_emb = self.model.model.rotary_emb
+            norm = self.model.model.norm
+        elif hasattr(self.model, 'layers'):
+            layers = self.model.layers
+            embed_tokens = self.model.embed_tokens
+            rotary_emb = self.model.rotary_emb
+            norm = self.model.norm
+        else:
+            raise ValueError(f"Cannot find layers in model type: {type(self.model)}")
+        
         if config.predictor_layers > 0:
-            self.transformer_layers = nn.ModuleList(
-                list(self.model.model.layers)[start_layer:]
-            )
-            self.norm = self.model.model.norm
+            self.transformer_layers = nn.ModuleList(list(layers)[start_layer:])
+            self.norm = norm
             self.using_partial_layers = True
         else:
             self.transformer_layers = None
             self.using_partial_layers = False
         
-        self.embed_tokens = self.model.model.embed_tokens
-        self.rotary_emb = self.model.model.rotary_emb
+        self.embed_tokens = embed_tokens
+        self.rotary_emb = rotary_emb
         
         self.hidden_size = hidden_size
         self.num_layers = num_layers
