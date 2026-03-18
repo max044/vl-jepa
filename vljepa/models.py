@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModel, AutoTokenizer, AutoConfig
-from transformers.modeling_utils import ModuleUtils
 import numpy as np
 from typing import Optional
 
