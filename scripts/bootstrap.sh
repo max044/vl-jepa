@@ -37,7 +37,18 @@ else
     cd "$REPO_DIR"
 fi
 
-# ── 4. Install Python dependencies ─────────────────────────────
+# ── 4. Install system dependencies ─────────────────────────────
+echo ""
+echo "▸ Installing system dependencies..."
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    curl \
+    git \
+    ffmpeg \
+    unzip \
+    build-essential
+
+# ── 4.5. Install Python dependencies ───────────────────────────
 echo ""
 echo "▸ Installing dependencies with uv..."
 uv sync
