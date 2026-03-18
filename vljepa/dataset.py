@@ -147,26 +147,6 @@ class CharadesSTADataset(Dataset):
                 )
             except Exception as e:
                 print(f"Error downloading {sample['video_id']} from HF Storage: {e}")
-                return None
-
-# Load frames from the annotated temporal segment
-        # If use_regression is enabled, we occasionally sample a larger window
-        if not os.path.exists(video_path):
-            # Download from HF Storage or Dataset
-            if self.config.use_hf_storage and HAS_HF_HUB:
-                try:
-                    video_path = hf_hub_download(
-                        repo_id=HF_STORAGE_BUCKET,
-                        filename=f"Charades_v1_480/{sample['video_id']}.mp4",
-                        repo_type="dataset",
-                        local_dir=self.videos_dir,
-                        local_dir_use_symlinks=False,
-                        token=os.getenv('HF_TOKEN'),
-                    )
-                except Exception as e:
-                    print(f"Error downloading {sample['video_id']} from HF Storage: {e}")
-                    return None
-            elif HAS_HF_HUB:
                 # Fallback to HF Dataset
                 try:
                     video_path = hf_hub_download(
@@ -177,11 +157,39 @@ class CharadesSTADataset(Dataset):
                         local_dir_use_symlinks=False,
                         token=os.getenv('HF_TOKEN'),
                     )
-                except Exception as e:
-                    print(f"Error downloading {sample['video_id']}: {e}")
+                except Exception as e2:
+                    print(f"Error downloading {sample['video_id']}: {e2}")
                     return None
-            else:
-                return None
+
+        # Load frames from the annotated temporal segment
+        # If use_regression is enabled, we occasionally sample a larger window
+        # to train the regression head.
+        start_sec = sample["start"]
+        end_sec = sample["end"]
+        
+        if self.split == "train" and getattr(self.config, "use_regression", False):
+            # Jitter window: +/- 20% of duration, or fixed 2s
+            dur = end_sec - start_sec
+            jitter = min(2.0, dur * 0.2)
+            
+            # Randomly shift start/end
+            win_start = max(0, start_sec - np.random.uniform(0, jitter))
+            win_end = end_sec + np.random.uniform(0, jitter)
+            
+            # These are the boundaries of the frames we load
+            load_start, load_end = win_start, win_end
+        else:
+            load_start, load_end = start_sec, end_sec
+
+        frames = load_video_frames(
+            video_path,
+            start_sec=load_start,
+            end_sec=load_end,
+            num_frames=self.config.num_frames,
+        )
+
+        if frames is None or len(frames) == 0:
+            return None
 
         # Calculate regression targets relative to the loaded window
         # o_start = (gt_start - win_start) / win_duration
