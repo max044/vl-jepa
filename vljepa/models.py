@@ -223,17 +223,11 @@ class Predictor(nn.Module):
         hidden_states = combined_embeds
         
         if self.using_partial_layers:
-            position_embeddings = self.rotary_emb(hidden_states, position_ids)
-            
-            cos = position_embeddings[0].unsqueeze(0)
-            sin = position_embeddings[1].unsqueeze(0)
-            
             for layer in self.transformer_layers:
                 hidden_states = layer(
                     hidden_states,
                     attention_mask=combined_mask,
                     position_ids=position_ids,
-                    position_embeddings=(cos, sin),
                 )[0]
             
             batch_indices = torch.arange(B, device=device)
