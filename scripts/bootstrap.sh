@@ -97,7 +97,9 @@ else
     # Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
     
     # On installe hf_transfer pour un téléchargement Rust multi-threads ultra rapide
-    HF_HUB_ENABLE_HF_TRANSFER=1 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$HF_DATASET_ID', repo_type='dataset', local_dir='data')"
+    uv pip install hf_transfer
+    HF_HUB_ENABLE_HF_TRANSFER=1 uv run python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$HF_DATASET_ID', repo_type='dataset', local_dir='data', resume_download=True)"
+
     
     echo "✓ Dataset ready in data/"
 fi
