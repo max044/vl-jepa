@@ -1,42 +1,82 @@
-"""Download Charades-STA annotations."""
+"""Download Charades-STA annotations from Hugging Face Storage bucket.
+
+This script downloads annotations from the private HF Storage bucket:
+hf://buckets/max044/charades-sta-storage
+"""
 
 import os
+from pathlib import Path
+
+try:
+    from huggingface_hub import hf_hub_download
+    HAS_HF = True
+except ImportError:
+    HAS_HF = False
 
 DATA_DIR = "./data"
+BUCKET_URL = "hf://buckets/max044/charades-sta-storage/Charades_v1_480"
+
 
 def main():
+    if not HAS_HF:
+        print("Error: huggingface_hub not installed. Run: pip install huggingface-hub")
+        return
+
     os.makedirs(DATA_DIR, exist_ok=True)
-    _extract_hf("test", os.path.join(DATA_DIR, "charades_sta_test.txt"))
 
-def _extract_hf(split: str, dest: str):
-    """Download from HuggingFace and convert to .txt format.
+    # Download train annotations
+    train_dest = os.path.join(DATA_DIR, "charades_sta_train.txt")
+    _download_from_bucket("charades_sta_train.txt", train_dest)
 
-    The lmms-lab/charades_sta dataset has only a 'test' split with columns:
-    video (str, e.g. '3MSZA.mp4'), caption (str), timestamp (list[float, float])
-    """
+    # Download test annotations
+    test_dest = os.path.join(DATA_DIR, "charades_sta_test.txt")
+    _download_from_bucket("charades_sta_test.txt", test_dest)
+
+    print("\n✓ All annotations downloaded successfully!")
+
+
+def _download_from_bucket(filename: str, dest: str):
+    """Download a file from the HF Storage bucket."""
     try:
-        from datasets import load_dataset
-        
-        # We extract what we can from HF
-        ds = load_dataset("lmms-lab/charades_sta", split="test")
-        lines = []
-        for item in ds:
-            vid = item.get("video", "")
-            if vid.endswith(".mp4"):
-                vid = vid[:-4]  # Remove .mp4 extension
-            caption = item.get("caption", "")
-            ts = item.get("timestamp", [0, 10])
-            start, end = float(ts[0]), float(ts[1])
-            if vid and caption:
-                lines.append(f"{vid} {start} {end}##{caption}")
+        downloaded_path = hf_hub_download(
+            repo_id="max044/charades-sta-storage",
+            filename=f"Charades_v1_480/{filename}",
+            repo_type="dataset",
+            local_dir=DATA_DIR,
+            local_dir_use_symlinks=False,
+        )
 
-        with open(dest, "w") as f:
-            f.write("\n".join(lines))
+        # Rename to expected location if needed
+        if downloaded_path != dest:
+            Path(downloaded_path).rename(dest)
 
-        print(f"✓ Created {dest} from HuggingFace ({len(lines)} entries)")
+        # Count lines
+        with open(dest, "r") as f:
+            lines = sum(1 for _ in f)
+
+        print(f"✓ Downloaded {filename} ({lines} entries)")
     except Exception as e:
-        print(f"HuggingFace dataset extraction failed: {e}")
-        print("Please download annotations manually.")
+        print(f"Error downloading {filename}: {e}")
+        print("Trying fallback to GitHub...")
+        _download_from_github(filename, dest)
+
+
+def _download_from_github(filename: str, dest: str):
+    """Fallback: download from GitHub MESM repo."""
+    import urllib.request
+
+    url = f"https://raw.githubusercontent.com/lntzm/MESM/main/data/charades/annotations/{filename}"
+
+    try:
+        urllib.request.urlretrieve(url, dest)
+
+        with open(dest, "r") as f:
+            lines = sum(1 for _ in f)
+
+        print(f"✓ Downloaded {filename} from GitHub ({lines} entries)")
+    except Exception as e:
+        print(f"Failed to download {filename}: {e}")
+
 
 if __name__ == "__main__":
     main()

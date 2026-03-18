@@ -73,13 +73,15 @@ def main():
 
     print(f"📥 Need to download {len(to_download)} videos...")
 
-    # 4. Parallel download
+    # 4. Parallel download from HF Storage
     # We use a ThreadPoolExecutor because hf_hub_download is I/O bound
     # hf_transfer (if installed) will handle the per-file speed.
     max_workers = 8  # Adjust based on your bandwidth
     
+    bucket_id = config.hf_bucket_id if config.use_hf_storage else config.hf_dataset_id
+    
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(download_video, vid, config.hf_dataset_id, config.videos_dir): vid for vid in to_download}
+        futures = {executor.submit(download_video, vid, bucket_id, config.videos_dir): vid for vid in to_download}
         
         results = []
         for future in tqdm(futures, total=len(to_download), desc="Downloading"):

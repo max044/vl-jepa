@@ -158,12 +158,18 @@ def main():
     
     with tqdm(total=len(samples), desc="Evaluating", dynamic_ncols=True) as pbar:
         for video_path, group in video_to_queries.items():
-            # 1. Ensure video exists
+            # 1. Ensure video exists (download from HF Storage if needed)
             if not os.path.exists(video_path):
-                if HAS_HF_HUB and config.hf_dataset_id:
+                if HAS_HF_HUB and config.use_hf_storage:
                     try:
                         vid = group[0].get("video_id") or os.path.basename(video_path).replace(".mp4", "")
-                        video_path = hf_hub_download(config.hf_dataset_id, f"{vid}.mp4", repo_type="dataset", local_dir=config.videos_dir)
+                        video_path = hf_hub_download(
+                            config.hf_bucket_id,
+                            f"Charades_v1_480/{vid}.mp4",
+                            repo_type="dataset",
+                            local_dir=config.videos_dir,
+                            local_dir_use_symlinks=False
+                        )
                     except Exception:
                         skipped += len(group); pbar.update(len(group)); continue
                 else:

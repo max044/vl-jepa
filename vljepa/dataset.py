@@ -14,6 +14,9 @@ try:
 except ImportError:
     HAS_HF_HUB = False
 
+# HF Storage bucket configuration - read from env or use default
+HF_STORAGE_BUCKET = os.getenv("HF_BUCKET_ID", "max044/charades-sta-storage")
+
 
 class CharadesSTADataset(Dataset):
     """Dataset for Charades-STA temporal grounding.
@@ -81,7 +84,7 @@ class CharadesSTADataset(Dataset):
                 video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
                 
                 # If streaming/lazy loading is enabled, we add even if not local
-                if os.path.exists(video_path) or self.config.hf_dataset_id:
+                if os.path.exists(video_path) or self.config.use_hf_storage:
                     self.samples.append({
                         "video_path": video_path,
                         "video_id": video_id,
@@ -105,7 +108,7 @@ class CharadesSTADataset(Dataset):
                 caption = item.get("query", "") or item.get("description", "")
 
                 video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
-                if (os.path.exists(video_path) or self.config.hf_dataset_id) and caption:
+                if (os.path.exists(video_path) or self.config.use_hf_storage) and caption:
                     self.samples.append({
                         "video_path": video_path,
                         "video_id": video_id,
@@ -125,22 +128,25 @@ class CharadesSTADataset(Dataset):
         sample = self.samples[idx]
         video_path = sample["video_path"]
 
-        # ── Lazy Loading from HF ────────────────────────────
-        if not os.path.exists(video_path) and self.config.hf_dataset_id:
-            if HAS_HF_HUB:
-                try:
-                    # Download only the specific file needed
-                    video_path = hf_hub_download(
-                        repo_id=self.config.hf_dataset_id,
-                        filename=f"{sample['video_id']}.mp4",
-                        repo_type="dataset",
-                        local_dir=self.videos_dir, # Cache it in the videos dir
-                    )
-                except Exception as e:
-                    print(f"Error downloading {sample['video_id']}: {e}")
-                    return None
-            else:
-                print("Error: huggingface_hub not installed, cannot lazy load.")
+        # ── Lazy Loading from HF Storage Bucket ────────────────────────────
+        # Check if we should use HF Storage (XET) for lazy loading
+        use_hf_storage = (
+            not os.path.exists(video_path) and self.config.use_hf_storage
+        )
+
+        if use_hf_storage and HAS_HF_HUB:
+            try:
+                # Download from HF Storage bucket (XET-backed)
+                # This is much faster than the old dataset method
+                video_path = hf_hub_download(
+                    repo_id=HF_STORAGE_BUCKET,
+                    filename=f"Charades_v1_480/{sample['video_id']}.mp4",
+                    repo_type="dataset",
+                    local_dir=self.videos_dir,
+                    local_dir_use_symlinks=False,
+                )
+            except Exception as e:
+                print(f"Error downloading {sample['video_id']} from HF Storage: {e}")
                 return None
 
         # Load frames from the annotated temporal segment

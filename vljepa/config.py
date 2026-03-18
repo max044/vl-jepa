@@ -54,8 +54,11 @@ class Config:
     videos_dir: str = "./data/Charades_v1_480"
     anno_train: str = "./data/charades_sta_train.txt"
     anno_test: str = "./data/charades_sta_test.txt"
-    hf_dataset_id: str = "max044/Charades_v1_480"
     val_split: float = 0.1  # % of training data to use for validation
+
+    # HF Storage (XET) - faster alternative to dataset for cloud training
+    use_hf_storage: bool = True  # Use HF Storage bucket instead of dataset
+    hf_bucket_id: str = "max044/charades-sta-storage"  # HF Bucket ID (replaces hf_dataset_id)
 
     # ── Checkpoints ─────────────────────────────────────────
     checkpoint_dir: str = "./checkpoints"
