@@ -53,8 +53,8 @@ def main():
         print("ℹ️ Dry run complete. No instance launched.")
         return
     
-    print(f"🚀 Launching instance {offer_id}...")
-    result = sdk.create_instance(id=offer_id, image=args.image, label="vl-jepa-training")
+    print(f"🚀 Launching instance {offer_id} with {args.disk}GB disk...")
+    result = sdk.create_instance(id=offer_id, image=args.image, label="vl-jepa-training", disk=args.disk)
     
     if 'new_contract' not in result:
         print(f"❌ Error launching instance: {result}")
