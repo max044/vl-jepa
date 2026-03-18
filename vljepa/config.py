@@ -59,8 +59,8 @@ class Config:
     val_split: float = 0.1  # % of training data to use for validation
 
     # HF Storage (XET) - faster alternative to dataset for cloud training
-    use_hf_storage: bool = True  # Use HF Storage bucket instead of dataset
-    hf_bucket_id: str = "max044/charades-sta-storage"  # HF Bucket ID (replaces hf_dataset_id)
+    use_hf_storage: bool = False  # Use HF dataset instead (bucket not accessible)
+    hf_dataset_id: str = "max044/Charades_v1_480"  # HF Dataset for videos
 
     # ── Checkpoints ─────────────────────────────────────────
     checkpoint_dir: str = "./checkpoints"
