@@ -39,7 +39,8 @@ EVAL_CMD="uv run python eval.py \
     --device cuda \
     --checkpoint $CHECKPOINT \
     --wandb-project $WANDB_PROJECT \
-    $EXTRA_ARGS"
+    $EXTRA_ARGS \
+    $@"
 
 echo "▸ Command: $EVAL_CMD"
 echo ""

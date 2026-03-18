@@ -79,8 +79,8 @@ TRAIN_CMD="uv run python train.py \
     --lr $LR \
     --num-workers $NUM_WORKERS \
     --wandb-project $WANDB_PROJECT \
-    $RESUME_ARGS \
-    $EXTRA_ARGS"
+    $EXTRA_ARGS \
+    $@"
 
 echo "▸ Command: $TRAIN_CMD"
 echo ""

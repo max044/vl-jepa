@@ -69,27 +69,38 @@ fi
 # qui contient à la fois les vidéos et les annotations.
 export HF_DATASET_ID="max044/Charades_v1_480"
 
-echo ""
-echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
+# Permet de bypass le téléchargement si explicitement demandé
+DOWNLOAD_DATASET="${DOWNLOAD_DATASET:-true}"
 
-# On télécharge tout dans le dossier data/
-# Les fichiers .txt iront dans data/
-# Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
-
-# On installe hf_transfer pour un téléchargement Rust multi-threads ultra rapide
-uv pip install hf_transfer
-HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download "$HF_DATASET_ID" --local-dir data --repo-type dataset
-
-echo "✓ Dataset ready in data/"
+if [ "$DOWNLOAD_DATASET" = "false" ]; then
+    echo ""
+    echo "▸ Skipping heavy dataset download (DOWNLOAD_DATASET=false)."
+    echo "  Assuming data streaming or manual download will be used."
+else
+    echo ""
+    echo "▸ Downloading dataset from HF: $HF_DATASET_ID..."
+    
+    # On télécharge tout dans le dossier data/
+    # Les fichiers .txt iront dans data/
+    # Le dossier Charades_v1_480/ iront dans data/Charades_v1_480/
+    
+    # On installe hf_transfer pour un téléchargement Rust multi-threads ultra rapide
+    uv pip install hf_transfer
+    HF_HUB_ENABLE_HF_TRANSFER=1 uv run hf download "$HF_DATASET_ID" --local-dir data --repo-type dataset
+    
+    echo "✓ Dataset ready in data/"
+fi
 
 # ── 8. Check for video data ────────────────────────────────────
-if [ ! -d data/Charades_v1_480 ] || [ -z "$(ls -A data/Charades_v1_480 2>/dev/null)" ]; then
-    echo ""
-    echo "⚠  Videos not found at data/Charades_v1_480/ after HF download. Something went wrong."
-    echo "   Please check the HF dataset or download manually."
-else
-    VIDEO_COUNT=$(ls data/Charades_v1_480/*.mp4 2>/dev/null | wc -l)
-    echo "▸ Found $VIDEO_COUNT videos in data/Charades_v1_480/"
+if [ "$DOWNLOAD_DATASET" != "false" ]; then
+    if [ ! -d data/Charades_v1_480 ] || [ -z "$(ls -A data/Charades_v1_480 2>/dev/null)" ]; then
+        echo ""
+        echo "⚠  Videos not found at data/Charades_v1_480/ after HF download. Something went wrong."
+        echo "   Please check the HF dataset or download manually."
+    else
+        VIDEO_COUNT=$(ls data/Charades_v1_480/*.mp4 2>/dev/null | wc -l)
+        echo "▸ Found $VIDEO_COUNT videos in data/Charades_v1_480/"
+    fi
 fi
 
 echo ""
@@ -97,7 +108,11 @@ echo "════════════════════════�
 echo "✓ Bootstrap complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Ensure videos are in data/Charades_v1_480/"
+if [ "$DOWNLOAD_DATASET" = "false" ]; then
+    echo "  1. Train with streaming or download data manually"
+else
+    echo "  1. Ensure videos are in data/Charades_v1_480/"
+fi
 echo "  2. Set WANDB_API_KEY in .env"
 echo "  3. Run: bash scripts/train_cloud.sh"
 echo "═══════════════════════════════════════════"

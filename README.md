@@ -35,11 +35,44 @@ Instead of "describing" videos (generative), this model learns to **align** vide
 
 ---
 
-## ☁️ Cloud GPU Training (Vast.ai / RunPod)
+## ☁️ Cloud GPU Training (Vast.ai)
 
-We use **Lazy-Loading**: the training starts instantly. Videos are streamed from Hugging Face Hub only when needed.
+### 🚀 Automated Method (Recommended)
+We provide an automated launcher using the **Vast.ai Python SDK**. This script will find the cheapest GPU, launch it, sync your code/.env, bootstrap the environment, and **start training automatically**.
+
+1. **Configure Environment**:
+   ```bash
+   cp .env.example .env
+   # Add your VASTAI_API_KEY, WANDB_API_KEY and HF_TOKEN to .env
+   ```
+
+2. **Launch & Train**:
+   ```bash
+   uv run python scripts/vast_launcher.py --gpu "RTX 4090"
+   ```
+   *The script will automatically start training. You can monitor progress with the provided `tail -f` command or via SSH.*
+
+### 🎛️ Advanced Launcher Options
+The `vast_launcher.py` script is highly flexible. You can use it to run evaluations, sweeps, or just prepare an instance.
+
+- **Run a specific script** (e.g. an evaluation or sweep):
+  ```bash
+  uv run python scripts/vast_launcher.py --script "scripts/sweep.sh"
+  ```
+- **Skip dataset download** (useful if you stream data):
+  ```bash
+  uv run python scripts/vast_launcher.py --no-dataset
+  ```
+- **Prepare instance only** (bootstrap without running any script):
+  ```bash
+  uv run python scripts/vast_launcher.py --no-run
+  ```
+
+### 🛠️ Manual Method (Alternative)
+If you prefer to set up the instance yourself on Vast.ai or RunPod:
 
 1. **Initialize Instance**:
+   Run this on your fresh GPU instance:
    ```bash
    curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
    ```
@@ -56,11 +89,21 @@ We use **Lazy-Loading**: the training starts instantly. Videos are streamed from
    bash scripts/train_cloud.sh
    ```
 
-4. **Run Final Test**:
-   ```bash
-   # Replace ID with your W&B run ID
-   CHECKPOINT="max044/vl-jepa/model-ID:best" bash scripts/eval_cloud.sh
-   ```
+---
+
+## 🧪 Evaluation & Inference
+
+Once training is finished, you can evaluate your model on the test set:
+
+```bash
+# Replace ID with your W&B run ID (e.g. 1a2b3c4d)
+CHECKPOINT="max044/vl-jepa/model-ID:best" bash scripts/eval_cloud.sh
+```
+
+To run inference on a single video, use:
+```bash
+uv run infer.py --checkpoint path/to/model.pt --video data/test.mp4 --query "person opening door"
+```
 
 ---
 
