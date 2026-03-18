@@ -40,14 +40,14 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--device", type=str, default=None)
-parser.add_argument("--debug", action="store_true")
-parser.add_argument("--debug-samples", type=int, default=None, help="Limit samples in debug mode")
-parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
-parser.add_argument("--num-workers", type=int, default=None)
-
-# Optional features
-parser.add_argument("--use-regression", action="store_true", help="Enable timestamp regression head")
-parser.add_argument("--use-learnable-temp", action="store_true", help="Enable learnable InfoNCE temperature")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--debug-samples", type=int, default=None, help="Limit samples in debug mode")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument("--num-workers", type=int, default=None)
+    
+    # Optional features
+    parser.add_argument("--use-regression", action="store_true", help="Enable timestamp regression head")
+    parser.add_argument("--use-learnable-temp", action="store_true", help="Enable learnable InfoNCE temperature")
 
     # W&B arguments
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
