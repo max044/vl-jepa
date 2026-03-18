@@ -584,7 +584,7 @@ def main():
     if os.path.exists(best_generic_path):
         import subprocess
         eval_cmd = [
-            "python", "eval.py", 
+            "python3", "eval.py", 
             "--checkpoint", best_generic_path,
             "--device", config.device
         ]
