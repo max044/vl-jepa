@@ -144,6 +144,7 @@ class CharadesSTADataset(Dataset):
                     repo_type="dataset",
                     local_dir=self.videos_dir,
                     local_dir_use_symlinks=False,
+                    token=os.getenv('HF_TOKEN'),  # Pass token for private buckets
                 )
             except Exception as e:
                 print(f"Error downloading {sample['video_id']} from HF Storage: {e}")
