@@ -40,9 +40,10 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
-    parser.add_argument("--num-workers", type=int, default=None)
+parser.add_argument("--debug", action="store_true")
+parser.add_argument("--debug-samples", type=int, default=None, help="Limit samples in debug mode")
+parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
+parser.add_argument("--num-workers", type=int, default=None)
     
     # Optional features
     parser.add_argument("--use-regression", action="store_true", help="Enable timestamp regression head")
@@ -319,8 +320,10 @@ def main():
         config.lr = args.lr
     if args.device is not None:
         config.device = args.device
-    if args.debug:
-        config.debug = True
+if args.debug:
+    config.debug = True
+if args.debug_samples is not None:
+    config.debug_samples = args.debug_samples
     if args.num_workers is not None:
         config.num_workers = args.num_workers
         
