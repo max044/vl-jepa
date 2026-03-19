@@ -3,33 +3,33 @@
 
 # Model
 clip_model: "facebook/vjepa2-vitl-fpc64-256"
-predictor_model: "Qwen/Qwen2.5-0.5B"
-use_lora: true
-lora_r: 64
-lora_alpha: 128
-lora_dropout: 0.05
-lora_target_modules: ["q_proj", "v_proj"]
-text_model: "sentence-transformers/all-MiniLM-L6-v2"
+predictor_model: "Qwen/Qwen3.5-0.8B"
+use_lora: false
+predictor_layers: 0
+text_model: "Qwen/Qwen3-Embedding-0.6B"
 
 # Dimensions
 x_dim: 1024
 predictor_dim: 896
-text_dim: 384
-embed_dim: 384
+text_dim: 1024
+embed_dim: 1536
 
 # Video
 num_frames: 16
 frame_size: 224
 
 # Training
-batch_size: 4
-lr: 0.0003
-weight_decay: 0.01
+batch_size: 2
+grad_accumulation: 2
+lr: 0.0001
+weight_decay: 0.05
 epochs: 20
-warmup_steps: 200
+warmup_steps: 500
 grad_clip: 1.0
 temperature: 0.07
 sigreg_weight: 0.1
+y_encoder_lr_multiplier: 0.05
+dtype: "bf16"
 
 # Optional features
 use_regression: false
