@@ -1,6 +1,7 @@
 """
-VL-JEPA AutoResearch Training Script
+VL-JEPA AutoResearch Training Script - Simplified
 Single-GPU, single-file, time-budgeted experiments.
+SIGReg enabled (weight=0.05), InfoNCE only, no regression.
 
 Usage: uv run train.py > run.log 2>&1
 """
@@ -37,36 +38,32 @@ from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
 from vljepa.losses import vl_jepa_loss, SIGReg
-from vljepa.evaluation import compute_temporal_metrics, compute_iou, predict_from_offsets, sliding_window_prediction
 
 from prepare import TIME_BUDGET, DATA_DIR
 
 # Fix data path when running from autoresearch/ directory
-import os
 if os.path.basename(os.getcwd()) == "autoresearch":
     DATA_DIR = Path("../data/autoresearch")
 
 # ---------------------------------------------------------------------------
-# Hyperparameters (edit these directly, no CLI flags needed)
+# Hyperparameters (BEST found so far - edit for experiments)
 # ---------------------------------------------------------------------------
 
 # Training
 BATCH_SIZE = 2
 GRAD_ACCUMULATION = 2  # Effective batch = 4
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4    # BEST: 3e-4
 WARMUP_STEPS = 100
 WEIGHT_DECAY = 0.05
 
 # Loss
-TEMPERATURE = 0.07
-SIGREG_WEIGHT = 0.1
+TEMPERATURE = 0.03       # BEST: 0.03
+SIGREG_WEIGHT = 0.05     # Fixed, always enabled
 
 # Model
 PREDICTOR_LAYERS = 0  # 0 = use all layers
 USE_BIDIRECTIONAL_ATTENTION = True
 Y_ENCODER_LR_MULTIPLIER = 0.05
-USE_REGRESSION = False  # Direct start/end prediction
-REGRESSION_WEIGHT = 1.0
 
 # Data
 NUM_WORKERS = 4
@@ -101,8 +98,7 @@ config = Config(
     predictor_layers=PREDICTOR_LAYERS,
     use_bidirectional_attention=USE_BIDIRECTIONAL_ATTENTION,
     y_encoder_lr_multiplier=Y_ENCODER_LR_MULTIPLIER,
-    use_regression=USE_REGRESSION,
-    regression_loss_weight=REGRESSION_WEIGHT,
+    use_regression=False,  # Disabled for autoresearch
     device=str(device),
 )
 
@@ -211,10 +207,9 @@ optimizer = torch.optim.AdamW(
     betas=(0.9, 0.999),
 )
 
-# SIGReg
-sigreg = SIGReg().to(device) if config.sigreg_weight > 0 else None
-if sigreg:
-    print(f"SIGReg: weight={config.sigreg_weight}")
+# SIGReg - always enabled
+sigreg = SIGReg().to(device)
+print(f"SIGReg: weight={config.sigreg_weight}")
 
 # GradScaler (disabled for fp32)
 scaler = None
@@ -224,17 +219,15 @@ print(f"Starting training...\n")
 
 # W&B
 if USE_WANDB and HAS_WANDB:
-    # Run name: always include all key params
-    reg_str = "_regression" if config.use_regression else ""
-    sigreg_str = f"_sigreg{config.sigreg_weight}" if config.sigreg_weight > 0 else "_no_sigreg"
-    run_name = f"lr{config.lr}_temp{config.temperature}{sigreg_str}{reg_str}"
+    # Run name: include key params
+    run_name = f"lr{config.lr}_temp{config.temperature}_sigreg{config.sigreg_weight}"
     
     # Tags for easy filtering
-    tags = []
-    tags.append("regression" if config.use_regression else "no_regression")
-    tags.append("with_sigreg" if config.sigreg_weight > 0 else "no_sigreg")
-    tags.append(f"lr_{config.lr}")
-    tags.append(f"temp_{config.temperature}")
+    tags = [
+        f"lr_{config.lr}",
+        f"temp_{config.temperature}",
+        f"sigreg_{config.sigreg_weight}",
+    ]
     
     wandb.init(
         project=WANDB_PROJECT,
@@ -250,8 +243,6 @@ if USE_WANDB and HAS_WANDB:
 
 t_start_training = time.time()
 best_val_loss = float('inf')
-best_mIoU = 0.0
-best_R1 = 0.0
 total_training_time = 0
 step = 0
 epoch = 0
@@ -293,23 +284,12 @@ while True:
         sy_hat = outputs["sy_hat"]  # Predicted embeddings [B, D]
         sy = outputs["sy"]  # Target embeddings [B, D]
 
-        # Prepare regression targets if enabled
-        offsets = None
-        offset_targets = None
-        if config.use_regression and "offsets" in outputs:
-            offsets = outputs["offsets"]
-            offset_targets = torch.tensor(batch["offset_targets"], device=device, dtype=torch.float32)
-
-        # For InfoNCE: sy_hat vs sy
-        # sy_hat should align with sy (bidirectional)
+        # InfoNCE + SIGReg (no regression in autoresearch)
         loss, loss_dict = vl_jepa_loss(
             sy_hat, sy,
             temperature=config.temperature,
             sigreg_weight=config.sigreg_weight,
             sigreg_module=sigreg,
-            offsets=offsets,
-            offset_targets=offset_targets,
-            regression_weight=config.regression_loss_weight,
         )
         
         # Track loss (before backward to have correct value for logging)
@@ -336,7 +316,7 @@ while True:
                 wandb.log({
                     "train/loss": train_loss,
                     "train/infonce": loss_dict["loss/infonce"],
-                    "train/sigreg": loss_dict.get("loss/sigreg", 0),
+                    "train/sigreg": loss_dict["loss/sigreg"],
                     "train/lr": optimizer.param_groups[0]["lr"],
                     "step": step,
                 })
@@ -392,9 +372,6 @@ while True:
         val_infonce = 0.0
         val_batches = 0
         
-        # For temporal metrics
-        batch_predictions = []
-        
         with torch.no_grad():
             for batch in val_loader:
                 if batch is None:
@@ -417,70 +394,29 @@ while True:
                 sy_hat = outputs["sy_hat"]
                 sy = outputs["sy"]
                 
-                # Prepare regression targets if enabled
-                offsets = None
-                offset_targets = None
-                if config.use_regression and "offsets" in outputs:
-                    offsets = outputs["offsets"]
-                    offset_targets = torch.tensor(batch["offset_targets"], device=device, dtype=torch.float32)
-                
+                # InfoNCE + SIGReg (no regression)
                 loss, loss_dict = vl_jepa_loss(
                     sy_hat, sy,
                     temperature=config.temperature,
                     sigreg_weight=config.sigreg_weight,
                     sigreg_module=sigreg,
-                    offsets=offsets,
-                    offset_targets=offset_targets,
-                    regression_weight=config.regression_loss_weight,
                 )
                 
                 val_loss += loss.item()
                 val_infonce += loss_dict["loss/infonce"]
-                
-                # Compute temporal predictions for IoU (regression only)
-                # For sliding window, true IoU requires scoring all windows with the model
-                # which needs reloading each window's frames — not feasible in this loop.
-                # We only compute mIoU for regression runs.
-                if config.use_regression and offsets is not None:
-                    batch_size = len(batch["queries"])
-                    for i in range(batch_size):
-                        gt_start = batch["starts"][i]
-                        gt_end = batch["ends"][i]
-                        offset_pred = offsets[i]  # [start_offset, end_offset]
-                        pred_start, pred_end = predict_from_offsets(offset_pred, gt_start, gt_end)
-                        batch_predictions.append({
-                            "gt_start": gt_start,
-                            "gt_end": gt_end,
-                            "pred_start": pred_start,
-                            "pred_end": pred_end,
-                        })
-                
                 val_batches += 1
         
         if val_batches > 0:
             avg_val_loss = val_loss / val_batches
             best_val_loss = min(best_val_loss, avg_val_loss)
             
-            # Compute temporal metrics
-            temporal_metrics = compute_temporal_metrics(batch_predictions, iou_threshold=0.5)
-            
-            # Update best mIoU
-            if temporal_metrics["mIoU"] > best_mIoU:
-                best_mIoU = temporal_metrics["mIoU"]
-                best_R1 = temporal_metrics["R@1"]
-            
             print(f"\n  → Val loss: {avg_val_loss:.4f} (best: {best_val_loss:.4f})")
-            print(f"  → mIoU: {temporal_metrics['mIoU']:.4f} (best: {best_mIoU:.4f}) | R@1: {temporal_metrics['R@1']:.2%} (best: {best_R1:.2%}) | R@5: {temporal_metrics['R@5']:.2%}")
             
             if USE_WANDB and HAS_WANDB and wandb.run:
                 wandb.log({
                     "val/loss": avg_val_loss,
                     "val/best": best_val_loss,
-                    "val/mIoU": temporal_metrics["mIoU"],
-                    "val/best_mIoU": best_mIoU,
-                    "val/R@1": temporal_metrics["R@1"],
-                    "val/best_R@1": best_R1,
-                    "val/R@5": temporal_metrics["R@5"],
+                    "val/infonce": val_infonce / val_batches,
                     "epoch": epoch,
                 })
 
@@ -506,9 +442,8 @@ print(f"num_steps:        {step}")
 print(f"num_epochs:       {epoch}")
 print(f"batch_size:       {BATCH_SIZE}")
 print(f"lr:               {LEARNING_RATE}")
-
-print(f"best_mIoU:        {best_mIoU:.6f}")
-print(f"best_R@1:         {best_R1:.6f}")
+print(f"temperature:      {TEMPERATURE}")
+print(f"sigreg_weight:    {SIGREG_WEIGHT}")
 
 if USE_WANDB and HAS_WANDB and wandb.run:
     # Add key parameters and best metrics to run summary
@@ -516,11 +451,8 @@ if USE_WANDB and HAS_WANDB and wandb.run:
         "hp/lr": LEARNING_RATE,
         "hp/temperature": TEMPERATURE,
         "hp/sigreg_weight": SIGREG_WEIGHT,
-        "hp/use_regression": USE_REGRESSION,
         "hp/batch_size": BATCH_SIZE,
         "hp/warmup_steps": WARMUP_STEPS,
-        "best_mIoU": best_mIoU,
-        "best_R@1": best_R1,
         "best_val_loss": best_val_loss,
     })
     # finish with timeout to avoid blocking on sync

@@ -193,10 +193,10 @@ class CharadesSTADataset(Dataset):
 
         # Calculate regression targets relative to the loaded window
         # o_start = (gt_start - win_start) / win_duration
-        # o_end = (gt_end - win_end) / win_duration
+        # o_end = (gt_end - win_start) / win_duration
         win_dur = load_end - load_start
         offset_start = (start_sec - load_start) / win_dur
-        offset_end = (end_sec - load_end) / win_dur
+        offset_end = (end_sec - load_start) / win_dur
 
         # Use a neutral query for training
         # (VL-JEPA learns to predict the target caption embedding from video + query)
