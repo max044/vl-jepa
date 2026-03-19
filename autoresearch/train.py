@@ -507,68 +507,18 @@ while True:
 
 print()  # newline
 
-# ---------------------------------------------------------------------------
-# Final evaluation
-# ---------------------------------------------------------------------------
-
-model.eval()
-final_val_loss = 0.0
-final_val_infonce = 0.0
-val_batches = 0
-
-with torch.no_grad():
-    for batch in val_loader:
-        if batch is None:
-            continue
-        
-        pixel_values = model.x_encoder.preprocess_frames(
-            batch["frames"], device=device
-        )
-        query_tokens = model.query_encoder.tokenize(
-            batch["queries"], device=device
-        )
-        
-        outputs = model(
-            pixel_values,
-            query_tokens["input_ids"],
-            query_tokens["attention_mask"],
-            batch["captions"],
-        )
-        
-        sy_hat = outputs["sy_hat"]
-        sy = outputs["sy"]
-        
-        loss, loss_dict = vl_jepa_loss(
-            sy_hat, sy,
-            temperature=config.temperature,
-            sigreg_weight=config.sigreg_weight,
-            sigreg_module=sigreg,
-        )
-
-        final_val_loss += loss.item()
-        final_val_infonce += loss_dict["loss/infonce"]
-        val_batches += 1
-
-if val_batches > 0:
-    final_val_loss /= val_batches
-    final_val_infonce /= val_batches
-
-best_val_loss = min(best_val_loss, final_val_loss)
-
 # Memory
 peak_vram_mb = 0
 if torch.cuda.is_available():
     peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 t_end = time.time()
-startup_time = t_start_training - t_start
 
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
 print("---")
-print(f"val_loss:         {final_val_loss:.6f}")
 print(f"best_val_loss:    {best_val_loss:.6f}")
 print(f"training_seconds: {total_training_time:.1f}")
 print(f"total_seconds:    {t_end - t_start:.1f}")

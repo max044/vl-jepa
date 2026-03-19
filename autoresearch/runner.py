@@ -99,14 +99,20 @@ def run_experiment(name, params, best_loss_so_far):
     subprocess.run(["git", "add", "autoresearch/train.py"], check=True)
     subprocess.run(["git", "commit", "-m", f"exp: {name}", "--allow-empty"], check=True)
     
-    # Run training
+    # Run training - timeout = TIME_BUDGET (300s) + 120s margin for startup/validation/summary
     start_time = time.time()
-    result = subprocess.run(
-        ["bash", "autoresearch/run.sh"],
-        capture_output=True,
-        text=True,
-        cwd="/root/vl-jepa"
-    )
+    try:
+        result = subprocess.run(
+            ["bash", "autoresearch/run.sh"],
+            capture_output=True,
+            text=True,
+            cwd="/root/vl-jepa",
+            timeout=600,  # 10 min max (5 min training + 5 min margin)
+        )
+    except subprocess.TimeoutExpired:
+        print(f"\n⚠️  Experiment {name} timed out after 10 minutes! Killing...")
+        subprocess.run(["pkill", "-f", "train.py"], check=False)
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="TIMEOUT")
     elapsed = time.time() - start_time
     
     # Parse results from output
