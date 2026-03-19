@@ -319,6 +319,9 @@ while True:
             regression_weight=config.regression_loss_weight,
         )
         
+        # Track loss (before backward to have correct value for logging)
+        train_loss = loss.item()
+        
         # Backward
         loss = loss / config.grad_accumulation
         loss.backward()
@@ -345,8 +348,8 @@ while True:
                     "step": step,
                 })
         
-        # Track loss
-        train_loss = loss.item() * config.grad_accumulation
+        # Scale back for tracking
+        train_loss = train_loss * config.grad_accumulation
         epoch_loss += train_loss
         epoch_infonce += loss_dict["loss/infonce"]
         num_batches += 1
