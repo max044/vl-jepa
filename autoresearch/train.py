@@ -29,6 +29,10 @@ except ImportError:
 from dotenv import load_dotenv
 load_dotenv()
 
+# Prevent W&B sync from blocking indefinitely
+os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
+os.environ.setdefault("WANDB_HTTP_TIMEOUT", "30")
+
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
@@ -531,4 +535,5 @@ if USE_WANDB and HAS_WANDB and wandb.run:
         "best_R@1": best_R1,
         "best_val_loss": best_val_loss,
     })
-    wandb.finish()
+    # finish with timeout to avoid blocking on sync
+    wandb.finish(exit_code=0, quiet=True)
