@@ -10,9 +10,9 @@ text_model: "Qwen/Qwen3-Embedding-0.6B"
 
 # Dimensions
 x_dim: 1024
-predictor_dim: 896
+predictor_dim: 1024
 text_dim: 1024
-embed_dim: 1536
+embed_dim: 1024
 
 # Video
 num_frames: 16
