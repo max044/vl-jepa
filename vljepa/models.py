@@ -144,6 +144,14 @@ class Predictor(nn.Module):
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
         
+        # Regression head for direct start/end prediction
+        if config.use_regression:
+            self.regression_head = nn.Sequential(
+                nn.Linear(hidden_size, hidden_size // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_size // 2, 2)  # Predict [start_offset, end_offset]
+            )
+        
         self.to(config.device)
 
     def forward(self, sv, input_ids, attention_mask):

@@ -60,6 +60,8 @@ SIGREG_WEIGHT = 0.1
 PREDICTOR_LAYERS = 0  # 0 = use all layers
 USE_BIDIRECTIONAL_ATTENTION = True
 Y_ENCODER_LR_MULTIPLIER = 0.05
+USE_REGRESSION = False  # Direct start/end prediction
+REGRESSION_WEIGHT = 1.0
 
 # Data
 NUM_WORKERS = 4
@@ -94,6 +96,8 @@ config = Config(
     predictor_layers=PREDICTOR_LAYERS,
     use_bidirectional_attention=USE_BIDIRECTIONAL_ATTENTION,
     y_encoder_lr_multiplier=Y_ENCODER_LR_MULTIPLIER,
+    use_regression=USE_REGRESSION,
+    regression_loss_weight=REGRESSION_WEIGHT,
     device=str(device),
 )
 
@@ -268,6 +272,13 @@ while True:
         sy_hat = outputs["sy_hat"]  # Predicted embeddings [B, D]
         sy = outputs["sy"]  # Target embeddings [B, D]
 
+        # Prepare regression targets if enabled
+        offsets = None
+        offset_targets = None
+        if config.use_regression and "offsets" in outputs:
+            offsets = outputs["offsets"]
+            offset_targets = torch.tensor(batch["offset_targets"], device=device, dtype=torch.float32)
+
         # For InfoNCE: sy_hat vs sy
         # sy_hat should align with sy (bidirectional)
         loss, loss_dict = vl_jepa_loss(
@@ -275,6 +286,9 @@ while True:
             temperature=config.temperature,
             sigreg_weight=config.sigreg_weight,
             sigreg_module=sigreg,
+            offsets=offsets,
+            offset_targets=offset_targets,
+            regression_weight=config.regression_loss_weight,
         )
         
         # Backward

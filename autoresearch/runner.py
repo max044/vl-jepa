@@ -33,6 +33,9 @@ EXPERIMENT_CONFIGS = [
     
     # Combined experiments (testing interactions)
     ("combo_best", {"LEARNING_RATE": "3e-4", "TEMPERATURE": "0.1", "SIGREG_WEIGHT": "0.05"}),
+    
+    # Architecture experiments (using best hyperparams found)
+    ("regression_direct", {"USE_REGRESSION": "True", "REGRESSION_WEIGHT": "1.0"}),
 ]
 
 # Default parameters (baseline)
