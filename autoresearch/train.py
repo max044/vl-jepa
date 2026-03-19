@@ -219,9 +219,37 @@ print(f"Starting training...\n")
 
 # W&B
 if USE_WANDB and HAS_WANDB:
+    # Create descriptive run name from changed parameters
+    run_name_parts = []
+    if config.lr != 1e-4:
+        run_name_parts.append(f"lr{config.lr}")
+    if config.temperature != 0.07:
+        run_name_parts.append(f"temp{config.temperature}")
+    if config.sigreg_weight != 0.1:
+        run_name_parts.append(f"sigreg{config.sigreg_weight}")
+    if config.use_regression:
+        run_name_parts.append("regression")
+    
+    run_name = "_".join(run_name_parts) if run_name_parts else "baseline"
+    
+    # Create tags for easy filtering
+    tags = []
+    if config.use_regression:
+        tags.append("regression")
+    else:
+        tags.append("no_regression")
+    if config.sigreg_weight > 0:
+        tags.append("with_sigreg")
+    else:
+        tags.append("no_sigreg")
+    tags.append(f"lr_{config.lr}")
+    tags.append(f"temp_{config.temperature}")
+    
     wandb.init(
         project=WANDB_PROJECT,
         config=asdict(config),
+        name=run_name,
+        tags=tags,
         reinit=True,
     )
 
@@ -488,4 +516,13 @@ print(f"batch_size:       {BATCH_SIZE}")
 print(f"lr:               {LEARNING_RATE}")
 
 if USE_WANDB and HAS_WANDB and wandb.run:
+    # Add key parameters to run summary for easy comparison
+    wandb.run.summary.update({
+        "hp/lr": LEARNING_RATE,
+        "hp/temperature": TEMPERATURE,
+        "hp/sigreg_weight": SIGREG_WEIGHT,
+        "hp/use_regression": USE_REGRESSION,
+        "hp/batch_size": BATCH_SIZE,
+        "hp/warmup_steps": WARMUP_STEPS,
+    })
     wandb.finish()
