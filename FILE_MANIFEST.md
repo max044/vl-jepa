@@ -27,9 +27,18 @@ Objectif : Trouver rapidement les meilleurs hyperparamètres via des expérience
 | Fichier | Description | Usage |
 |---------|-------------|-------|
 | `train.py` | Script d'entraînement time-budgeted (5 min) | **Modifier uniquement celui-ci** pour expérimenter |
-| `prepare.py` | Prépare les données (sous-ensemble) | Exécuter une fois : `uv run prepare.py` |
+| `prepare.py` | Prépare UN SOUS-ENSEMBLE de données (500 vidéos max) pour expériences rapides | Exécuter une fois : `uv run prepare.py --subset 500` |
 | `run.sh` | Lance une expérience simple | `bash autoresearch/run.sh` |
+
+**Note sur les données:**
+- `prepare.py` télécharge seulement 500 vidéos (~800MB) pour aller vite
+- Les données sont stockées dans `data/autoresearch/` (séparé de training)
+- Sur le cloud: les données autoresearch sont déjà prêtes (lien symbolique vers les vidéos complètes)
 | `results.tsv` | Track les résultats (non versionné) | Gitignore |
+
+**Différence clé avec training:**
+- **Autoresearch**: 500 vidéos max, 5 min d'entraînement, pour trouver les hyperparamètres
+- **Training**: 9,848 vidéos, 20+ epochs, entraînement complet avec les meilleurs params
 
 **Workflow:**
 1. Modifier `train.py` (hyperparams en haut du fichier)
@@ -48,7 +57,13 @@ Objectif : Entraînement complet sur toutes les données avec les meilleurs hype
 |---------|-------------|-------|
 | `train.py` | Entraînement complet (20+ epochs) | `uv run training/train.py` |
 | `eval.py` | Évaluation sur test set | `uv run training/eval.py --checkpoint checkpoints/best.pt` |
-| `download_data.py` | Télécharge toutes les vidéos | `uv run training/download_data.py` |
+| `download_data.py` | Télécharge TOUTES les vidéos (9,848 vidéos, ~15GB) | `uv run training/download_data.py` |
+
+**Important sur les données:**
+- `download_data.py` télécharge l'intégralité des 9,848 vidéos (~15GB) depuis Hugging Face Storage
+- Stocké dans `data/` (séparé de `data/autoresearch/`)
+- **Sur le cloud Vast.ai**: Les vidéos sont DÉJÀ présentes dans `data/Charades_v1_480/` (16GB) - NE PAS retélécharger
+- Le dataset charge les frames à la volée (streaming) pendant l'entraînement
 
 **Workflow:**
 1. Configurer les hyperparamètres dans `training/train.py` (ceux trouvés par autoresearch)

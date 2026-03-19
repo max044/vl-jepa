@@ -1,447 +1,263 @@
-# VL-JEPA Cloud Training Guide
+# VL-JEPA - Guide pour Agents IA
 
-Guide complet pour l'entraînement de VL-JEPA sur le cloud avec optimisation des hyperparamètres via Auto-Research.
+## Vue d'ensemble
 
-## 🎯 Objectif
+VL-JEPA est un modèle de **Temporal Moment Retrieval** : trouver un moment dans une vidéo à partir d'une description textuelle.
 
-Créer un modèle de **Temporal Moment Retrieval** performant capable de localiser un moment spécifique dans une vidéo à partir d'une description textuelle (comme un Ctrl+F pour vidéos).
-
-Architecture :
+**Architecture actuelle:**
 - **X-Encoder**: V-JEPA 2 ViT-L (frozen, ~300M params)
-- **Predictor**: Qwen 2.5 0.5B avec LoRA
-- **Y-Encoder**: MiniLM-L6-v2 (frozen, ~22M params)
+- **Predictor**: Qwen3.5-0.8B (trainable, full fine-tune, pas de LoRA)
+- **Y-Encoder**: Qwen3-Embedding-0.6B (trainable)
+- **Embed dim**: 1024
+- **Loss**: InfoNCE bidirectionnel + SIGReg
 
-## 📊 Résultats Actuels
+**Baseline actuelle:**
+- val_loss: 1.101749 (commit 85395c7)
+- Entraînement: 5 min sur 500 échantillons
 
-Derniers résultats sur Charades-STA test set:
-```
-R@1 IoU=0.3: 65.24%
-R@1 IoU=0.5: 42.88%
-R@1 IoU=0.7: 20.32%
-mIoU: 41.82%
-```
+---
 
-**Objectifs à atteindre (SOTA)**:
-- R@1 IoU=0.5: ~50-60%
-- R@1 IoU=0.7: ~30-40%
-
-## 🚀 Quick Start
-
-### 1. Configuration environnement
-
-```bash
-# Copier et remplir le fichier .env
-cp .env.example .env
-
-# Variables nécessaires:
-# - WANDB_API_KEY: pour le tracking
-# - HF_TOKEN: pour accéder au bucket
-# - VASTAI_API_KEY: pour le cloud
-# - HF_BUCKET_ID: max044/charades-sta-storage
-```
-
-### 2. Test local rapide
-
-```bash
-# Vérifier que tout fonctionne
-python download_annotations.py
-
-# Test rapide (10 steps)
-python train.py --epochs 1 --max-steps 10 --debug
-
-# Évaluation rapide
-python eval.py --checkpoint checkpoints/latest.pt --limit 100
-```
-
-### 3. Lancer Auto-Research sur le Cloud
-
-```bash
-# Lancer 20 expériences sur RTX 4090 (budget: ~$2.50)
-python scripts/cloud_autoresearch.py \
-    --gpu rtx4090 \
-    --budget 5 \
-    --experiments 20 \
-    --terminate
-```
-
-## 📁 Structure du Projet
+## Structure du Repository
 
 ```
 vl-jepa/
-├── vljepa/                    # Code source
-│   ├── config.py              # Configuration
-│   ├── dataset.py             # Dataset Charades-STA
-│   ├── models.py              # Architecture VL-JEPA
-│   ├── losses.py              # Fonctions de perte
-│   └── utils.py               # Utilitaires
-├── configs/
-│   └── base.yaml              # Config de base
-├── scripts/
-│   ├── cloud_autoresearch.py  # Lanceur cloud
-│   ├── setup_cloud_data.sh    # Setup données cloud
-│   └── download_test_data.py  # Téléchargement test
-├── autoresearch/
-│   └── PROGRAM.md             # Instructions Auto-Research
-├── data/
-│   ├── charades_sta_train.txt
-│   ├── charades_sta_test.txt
-│   └── Charades_v1_480/       # Vidéos
-├── train.py                   # Entraînement
-├── eval.py                    # Évaluation
-└── CLOUD.md                   # Ce fichier
-```
-
-## ☁️ Cloud Training
-
-### Stockage HF (XET)
-
-Les données sont stockées sur **HF Storage** pour un accès rapide:
-- **Bucket**: `max044/charades-sta-storage`
-- **Format**: XET (déduplication, transferts rapides)
-- **Contenu**: 9,848 vidéos + annotations
-
-### Types de GPU disponibles
-
-| GPU | VRAM | Prix/h | Recommandation |
-|-----|------|--------|----------------|
-| RTX 3090 | 24GB | ~$0.30-0.40 | ⭐ Meilleur rapport qualité/prix |
-| RTX 4090 | 24GB | ~$0.40-0.60 | ⭐ Rapide, un peu plus cher |
-| A5000 | 24GB | ~$0.60-0.80 | Stable |
-| A6000 | 48GB | ~$0.80-1.00 | Si besoin de plus de VRAM |
-
-### Workflow Auto-Research
-
-1. **Phase 1: Screening** (5-10 min par expérience)
-   - Grid search sur hyperparamètres clés
-   - 20-30 configurations testées
-   - Métrique: convergence loss + R@1
-
-2. **Phase 2: Validation** (10-15 min)
-   - Top 3 configurations
-   - Run plus long pour validation
-
-3. **Phase 3: Full Training**
-   - Meilleure config
-   - 20 epochs complets
-   - Évaluation finale
-
-### Hyperparamètres à explorer
-
-```python
-# Priorité haute
-learning_rate: [1e-4, 3e-4, 1e-3, 3e-3]
-batch_size: [2, 4, 8]  # Selon VRAM disponible
-lora_r: [32, 64, 128]
-lora_alpha: [64, 128, 256]
-
-# Priorité moyenne  
-temperature: [0.03, 0.05, 0.07, 0.1, 0.15]
-sigreg_weight: [0.0, 0.05, 0.1, 0.2, 0.5]
-warmup_steps: [100, 200, 500]
-weight_decay: [0.0, 0.01, 0.001]
-```
-
-## 🔧 Commandes utiles
-
-### Entraînement
-
-```bash
-# Entraînement standard
-python train.py --epochs 20 --batch-size 4
-
-# Avec W&B
-python train.py --epochs 20 --batch-size 4 --wandb
-
-# Reprendre depuis checkpoint
-python train.py --resume checkpoints/checkpoint_epoch_10.pt
-
-# Config personnalisée
-python train.py --config configs/custom.yaml
-```
-
-### Évaluation
-
-```bash
-# Évaluation complète
-python eval.py --checkpoint checkpoints/best.pt
-
-# Limite le nombre d'échantillons (rapide)
-python eval.py --checkpoint checkpoints/best.pt --limit 100
-
-# Avec W&B
-python eval.py --checkpoint checkpoints/best.pt --wandb
-```
-
-### Cloud
-
-```bash
-# Lancer nouvelle instance
-python scripts/cloud_autoresearch.py --gpu rtx4090 --budget 5 --experiments 20
-
-# Utiliser instance existante
-python scripts/cloud_autoresearch.py --instance-id 12345 --config scripts/sweep_config.json
-
-# Dry run (voir ce qui serait fait)
-python scripts/cloud_autoresearch.py --gpu rtx4090 --budget 3 --dry-run
-
-# Terminer instance après
-python scripts/cloud_autoresearch.py --gpu rtx4090 --budget 5 --experiments 20 --terminate
-```
-
-## 📈 Monitoring
-
-### Weights & Biases
-
-- **Projet**: `vl-jepa`
-- **URL**: https://wandb.ai/maxence-cabiddu/vl-jepa
-- **Metrics trackés**:
-  - Train/Val Loss
-  - InfoNCE Loss
-  - R@1, R@5 (IoU=0.3, 0.5, 0.7)
-  - mIoU
-  - VRAM usage
-
-### Logs Cloud
-
-```bash
-# Voir instances actives
-vastai show instances
-
-# SSH dans une instance
-vastai ssh <instance_id>
-
-# Voir logs
-vastai logs <instance_id>
-```
-
-## 💡 Astuces
-
-### Optimisation mémoire
-
-```python
-# Si OOM sur RTX 4090 (24GB)
-batch_size: 2
-gradient_accumulation: 2  # Effective batch = 4
-mixed_precision: True
-```
-
-### Speed run
-
-```python
-# Pour tests rapides
-debug: True
-debug_samples: 100
-num_workers: 4
-```
-
-### Checkpoints
-
-- Sauvegardés automatiquement tous les 2 epochs
-- Meilleur modèle selon val_loss
-- Reprise possible avec `--resume`
-
-## 🐛 Dépannage
-
-### "No such file or directory: data/charades_sta_train.txt"
-
-```bash
-python download_annotations.py
-```
-
-### "Video file not found"
-
-```bash
-# Télécharger depuis HF Storage
-hf sync hf://buckets/max044/charades-sta-storage/Charades_v1_480 data/Charades_v1_480
-
-# Ou utiliser lazy loading (automatique si use_hf_storage=True)
-```
-
-### "CUDA out of memory"
-
-```bash
-# Réduire batch size
-python train.py --batch-size 2
-
-# Ou utiliser accumulation de gradients
-python train.py --batch-size 2 --grad-accum 2
-```
-
-### "VastAI instance not connecting"
-
-```bash
-# Vérifier crédits
-vastai show account
-
-# Voir offres disponibles
-vastai search offers --limit 10
-```
-
-## 📚 Ressources
-
-- **Paper V-JEPA**: https://arxiv.org/abs/2403.XXXXX
-- **Dataset Charades**: https://prior.allenai.org/projects/charades
-- **HF Storage Docs**: https://huggingface.co/docs/hub/xet
-- **Vast.ai**: https://vast.ai/
-
-## 🎯 Prochaines Étapes
-
-1. ✅ Configurer environnement (.env)
-2. ✅ Lancer test local
-3. 🔄 Lancer Auto-Research Phase 1 (20 expériences)
-4. ⏳ Analyser résultats Phase 1
-5. ⏳ Lancer Phase 2 (validation top configs)
-6. ⏳ Full training avec meilleure config
-7. ⏳ Évaluation finale + publication
-
-## 🧠 Leçons Apprises & Bonnes Pratiques
-
-### 🔐 Sécurité - Tokens et Secrets
-
-**NE JAMAIS exposer les tokens dans les logs ou commandes !**
-
-```bash
-# ✅ CORRECT - Utiliser un fichier .env
-scp .env root@instance:~/vl-jepa/.env
-
-# ❌ INCORRECT - Exposer le token dans la commande
-ssh root@instance "export HF_TOKEN=hf_xxx..."
-```
-
-**Procédure sécurisée pour le cloud:**
-1. Créer `.env` localement avec tous les secrets
-2. Copier via SCP : `scp -P [PORT] .env root@[IP]:~/vl-jepa/.env`
-3. Sur l'instance, charger avec : `export $(grep -v '^#' .env | xargs)`
-4. Authentifier HF : `python3 -c "from huggingface_hub import login; login(token='$HF_TOKEN')"`
-
-### 📦 Hugging Face Storage (XET) vs Dataset
-
-**Migration de Dataset vers Storage (XET)**
-
-- **Ancien système** : Dataset classique HF (`max044/Charades_v1_480`)
-  - Lent, téléchargement vidéo par vidéo
-  - Nécessite `datasets` library
-  
-- **Nouveau système** : HF Storage Bucket (`max044/charades-sta-storage`)
-  - Déduplication XET (60%+ d'économie)
-  - Transferts rapides avec `hf sync`
-  - Commande : `hf sync hf://buckets/[BUCKET]/Charades_v1_480 ./data/`
-
-**Configuration requise:**
-```python
-# vljepa/config.py
-use_hf_storage: bool = True
-hf_bucket_id: str = "max044/charades-sta-storage"
-```
-
-### ☁️ Problèmes Cloud Vast.ai
-
-**Template recommandé:**
-- ✅ `vastai/pytorch:latest` ou `vastai/pytorch:cuda-12.8.1-auto`
-- ❌ Éviter `pytorch/pytorch:...` (trop long à charger)
-
-**Variables d'environnement sur l'instance:**
-```bash
-# Le fichier .env DOIT être présent sur l'instance
-ls -la ~/vl-jepa/.env
-
-# Sinon le chargement des modèles HF échoue
-# Symptôme: "Loading models..." qui dure indéfiniment
-```
-
-**Authentification HF sur l'instance:**
-```bash
-# Lire le token depuis .env
-HF_TOKEN=$(grep '^HF_TOKEN=' .env | cut -d'=' -f2)
-
-# Authentifier Python
-python3 << EOF
-from huggingface_hub import login
-login(token='$HF_TOKEN', add_to_git_credential=True)
-print("Authenticated")
-EOF
-```
-
-### 🐛 Erreurs Fréquentes
-
-**"Loading models..." bloqué:**
-- Cause : Pas de HF_TOKEN configuré
-- Solution : Voir section authentification ci-dessus
-
-**"No such file or directory: data/charades_sta_train.txt":**
-- Cause : Annotations non présentes
-- Solution : `python download_annotations.py` ou télécharger depuis GitHub MESM
-
-**"CUDA out of memory":**
-- Réduire batch_size : `--batch-size 2`
-- Utiliser gradient accumulation
-- Désactuer mixed precision si nécessaire
-
-**"401 Client Error" sur HF Storage:**
-- Cause : Token invalide ou bucket privé sans auth
-- Solution : Vérifier HF_TOKEN et faire `huggingface-cli login`
-
-### 📊 Métriques et Résultats
-
-**Objectifs SOTA Charades-STA:**
-- R@1 IoU=0.5: ~50-60% (actuel: 42.88%)
-- R@1 IoU=0.7: ~30-40% (actuel: 20.32%)
-- mIoU: ~45-50% (actuel: 41.82%)
-
-**Hyperparamètres clés à tuner:**
-1. `learning_rate` : [1e-4, 3e-4, 1e-3] - Impact majeur
-2. `batch_size` : [2, 4, 8] - Selon VRAM
-3. `lora_r` : [32, 64, 128] - Capacité du predictor
-4. `temperature` : [0.05, 0.07, 0.1] - InfoNCE
-5. `sigreg_weight` : [0.0, 0.05, 0.1, 0.2] - Régularisation
-
-### 🚀 Workflow Auto-Research Efficace
-
-**Phase 1 - Screening (5 min/exp):**
-```bash
-# Lancer sur RTX 4090
-python scripts/cloud_autoresearch.py --gpu rtx4090 --budget 3 --experiments 15
-```
-
-**Phase 2 - Validation (15 min/exp):**
-- Prendre top 3 configs
-- Run 5 epochs complets
-- Comparer R@1 et mIoU
-
-**Phase 3 - Full Training:**
-- Meilleure config
-- 20 epochs
-- Évaluation sur test set complet
-
-### 💡 Astuces pour l'Auto-Research
-
-**Scripts à utiliser sur l'instance:**
-```bash
-# 1. Envoyer .env
-scp -P [PORT] .env root@[IP]:~/vl-jepa/.env
-
-# 2. Se connecter
-ssh -p [PORT] root@[IP]
-
-# 3. Lancer les expériences
-cd ~/vl-jepa
-bash scripts/run_autoresearch.sh
-```
-
-**Monitoring:**
-```bash
-# Voir l'avancement
-tail -f ~/vl-jepa/autoresearch/run.log
-
-# Voir les résultats
-cat ~/vl-jepa/autoresearch/results.csv
-
-# Voir l'utilisation GPU
-watch -n 1 nvidia-smi
+├── autoresearch/         # Expérimentations rapides (5 min)
+│   ├── train.py         # Script principal - MODIFIER UNIQUEMENT CELUI-CI
+│   ├── prepare.py       # Prépare sous-ensemble données (500 vidéos)
+│   └── run.sh           # Lance expérience: bash autoresearch/run.sh
+├── training/            # Entraînement complet
+│   ├── train.py         # Training 20 epochs, tous les checkpoints
+│   ├── eval.py          # Évaluation
+│   └── download_data.py # Télécharge TOUTES les vidéos (15GB)
+├── scripts/             # Scripts cloud
+│   ├── cloud_train.sh   # Lancer training
+│   ├── cloud_eval.sh    # Lancer évaluation
+│   └── setup_instance.sh # Setup instance
+├── vljepa/              # Code modèle (NE PAS MODIFIER)
+│   ├── config.py
+│   ├── models.py
+│   ├── dataset.py
+│   └── losses.py
+├── FILE_MANIFEST.md     # Documentation complète fichiers
+└── README.md            # Vue d'ensemble
 ```
 
 ---
 
-**Dernière mise à jour**: 2026-03-18
-**Version**: 1.1
-**Crédits restants Vast.ai**: $11.00
+## Gestion des Données
+
+### Autoresearch (Expérimentations)
+
+**Fichier:** `autoresearch/prepare.py`
+
+Télécharge UN SOUS-ENSEMBLE des données pour aller vite:
+- 500 vidéos maximum (vs 9,848 totales)
+- ~800MB au lieu de 15GB
+- Annotations train/test
+- Stocké dans `data/autoresearch/`
+
+**Usage:**
+```bash
+cd ~/vl-jepa
+uv run autoresearch/prepare.py --subset 500
+```
+
+**Sur le cloud:** Les données sont déjà préparées dans `data/autoresearch/` (lien symbolique vers les vidéos complètes).
+
+### Training Complet
+
+**Fichier:** `training/download_data.py`
+
+Télécharge TOUTES les données:
+- 9,848 vidéos Charades-STA
+- ~15GB total
+- Annotations train/test
+- Stocké dans `data/`
+
+**Usage:**
+```bash
+uv run training/download_data.py
+```
+
+**Important:** Sur l'instance cloud Vast.ai, les vidéos sont DÉJÀ présentes dans `data/Charades_v1_480/` (16GB). Ne pas retélécharger.
+
+### Dataset.py (Streaming/Lazy Loading)
+
+Le dataset `vljepa/dataset.py` fonctionne en **streaming**:
+- Ne charge pas toutes les vidéos en mémoire
+- Charge les frames à la volée pendant l'entraînement
+- Nécessite que les fichiers vidéo soient présents localement
+- Pas de téléchargement automatique pendant l'entraînement
+
+**Donc:**
+1. **Avant entraînement:** Télécharger les vidéos (prepare.py ou download_data.py)
+2. **Pendant entraînement:** Streaming depuis le disque
+
+---
+
+## Workflow Auto-Research (Sur Cloud)
+
+### 1. Se connecter à l'instance
+
+```bash
+ssh -p 15212 root@118.163.199.123
+cd ~/vl-jepa
+git pull origin main  # Synchroniser
+```
+
+### 2. Modifier les hyperparamètres
+
+```bash
+nano autoresearch/train.py
+```
+
+Modifier uniquement la section "Hyperparameters" (lignes 35-55):
+```python
+LEARNING_RATE = 3e-4    # Tester: 1e-5, 3e-5, 1e-4, 3e-4, 1e-3
+BATCH_SIZE = 2          # Tester: 2, 4, 8
+TEMPERATURE = 0.1       # Tester: 0.03, 0.05, 0.07, 0.1, 0.15
+SIGREG_WEIGHT = 0.2     # Tester: 0.0, 0.05, 0.1, 0.2, 0.5
+```
+
+### 3. Commit et lancer
+
+```bash
+git add autoresearch/train.py
+git commit -m "exp: lr=3e-4, temp=0.1, sigreg=0.2"
+
+bash autoresearch/run.sh
+```
+
+### 4. Analyser résultat
+
+```bash
+grep "^val_loss:" autoresearch/run.log
+# Sortie: val_loss: 1.023456
+```
+
+### 5. Décider
+
+**Si val_loss < baseline (1.101749):**
+```bash
+# Garder le commit (expérience réussie)
+echo "abc1234	1.023456	18.5	keep	lr=3e-4,temp=0.1" >> autoresearch/results.tsv
+```
+
+**Si val_loss >= baseline:**
+```bash
+# Abandonner (pas d'amélioration)
+git reset --hard HEAD~1
+```
+
+### 6. Itérer
+
+Recommencer depuis l'étape 2 avec d'autres hyperparamètres.
+
+---
+
+## Workflow Training Complet
+
+Une fois les meilleurs hyperparamètres trouvés:
+
+```bash
+# 1. Copier les meilleurs params
+cp autoresearch/train.py training/train.py
+nano training/train.py  # Ajuster pour training complet
+# - MAX_EPOCHS = 20
+# - MAX_TRAIN_SAMPLES = 0 (toutes les données)
+# - WARMUP_STEPS = 500
+
+# 2. Lancer
+git add training/train.py
+git commit -m "feat: full training with best params"
+bash scripts/cloud_train.sh
+
+# 3. Checkpoints sauvegardés dans checkpoints/ et W&B
+```
+
+---
+
+## Commandes Essentielles
+
+```bash
+# Voir GPU
+nvidia-smi
+
+# Voir logs en temps réel
+tail -f autoresearch/run.log
+tail -f training/run.log
+
+# Voir résultats
+cat autoresearch/results.tsv
+
+# Lancer autoresearch
+bash autoresearch/run.sh
+
+# Lancer training
+bash scripts/cloud_train.sh
+
+# Lancer évaluation
+bash scripts/cloud_eval.sh checkpoints/best_e20.pt
+
+# Setup instance (si nouvelle instance)
+bash scripts/setup_instance.sh
+```
+
+---
+
+## Hyperparamètres à Explorer
+
+| Paramètre | Baseline | Valeurs à tester |
+|-----------|----------|------------------|
+| LEARNING_RATE | 1e-4 | 1e-5, 3e-5, 3e-4, 1e-3 |
+| BATCH_SIZE | 2 | 2, 4, 8 (selon VRAM) |
+| TEMPERATURE | 0.07 | 0.03, 0.05, 0.1, 0.15 |
+| SIGREG_WEIGHT | 0.1 | 0.0, 0.05, 0.2, 0.5 |
+| WARMUP_STEPS | 100 | 50, 200, 500 |
+| WEIGHT_DECAY | 0.05 | 0.0, 0.01, 0.1 |
+
+---
+
+## Règles Importantes
+
+1. **Modifier UNIQUEMENT** `autoresearch/train.py` pour expérimenter
+2. **JAMAIS** modifier `vljepa/` (code modèle)
+3. **Un commit = une expérience** (pour rollback facile)
+4. **NE PAS** commiter: `data/`, `checkpoints/`, `.env`, `results.tsv`
+5. **TOUJOURS** utiliser `uv run`, jamais `python` directement
+6. **5 minutes max** par expérience autoresearch
+
+---
+
+## Monitoring
+
+- **Autoresearch W&B**: https://wandb.ai/maxence-cabiddu-maxence-cabiddu/vl-jepa-autoresearch
+- **Training W&B**: https://wandb.ai/maxence-cabiddu-maxence-cabiddu/vl-jepa
+- **Baseline**: val_loss = 1.101749 (à battre)
+
+---
+
+## Fichiers Importants à Connaître
+
+| Fichier | Rôle | Modifier? |
+|---------|------|-----------|
+| `autoresearch/train.py` | Expérimentations | ✅ Oui |
+| `training/train.py` | Training complet | ✅ Oui (rarement) |
+| `vljepa/*.py` | Code modèle | ❌ Non |
+| `FILE_MANIFEST.md` | Doc fichiers | Non (lecture) |
+| `program.md` | Instructions agents | Non (lecture) |
+
+---
+
+## Instance Cloud Actuelle
+
+- **ID**: 33130021
+- **IP**: 118.163.199.123:15212
+- **GPU**: RTX 6000 Ada 48GB
+- **Status**: Active
+- **Données**: Déjà présentes (16GB vidéos + annotations)
+
+---
+
+**Dernière mise à jour**: 2026-03-19
+**Version**: 2.0 (restructure)
