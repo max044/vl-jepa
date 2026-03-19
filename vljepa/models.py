@@ -117,155 +117,68 @@ class QueryEncoder(nn.Module):
 
 
 class Predictor(nn.Module):
-    """Qwen 3.5 0.8B Predictor with bi-directional attention.
-    
-    Based on VL-JEPA paper Section 3.1:
-    - Uses last N transformer layers (default: 8)
-    - Disables causal attention mask for bi-directional attention
-    - Linear projections connect to vision and text embeddings
-    - Average pooling on non-[PAD] tokens for output
-    """
-
     def __init__(self, config: Config):
         super().__init__()
-        self.config = config
         
-        # Handle dtype selection
-        if config.dtype == "bf16":
-            dtype = torch.bfloat16
-        elif config.dtype == "fp16":
-            dtype = torch.float16
-        else:
-            dtype = torch.float32
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(config.dtype, torch.float32)
         
-        model_config = AutoConfig.from_pretrained(config.predictor_model, trust_remote_code=True)
-        
-        self.model = AutoModel.from_pretrained(
+        # Charger le text model directement (pas ForCausalLM)
+        from transformers import AutoModelForCausalLM
+        full_model = AutoModelForCausalLM.from_pretrained(
             config.predictor_model,
             torch_dtype=dtype,
-            trust_remote_code=True
+            trust_remote_code=True,
+            attn_implementation="eager",  # pas flash attention pour l'instant
         )
         
-        # Handle different config structures (Qwen2 vs Qwen3.5)
-        if hasattr(model_config, 'text_config'):
-            # Qwen3.5 style config
-            hidden_size = getattr(model_config.text_config, 'hidden_size', 1024)
-            num_hidden_layers = getattr(model_config.text_config, 'num_hidden_layers', 24)
-        else:
-            # Qwen2 style config
-            hidden_size = getattr(model_config, 'hidden_size', 896)
-            num_hidden_layers = getattr(model_config, 'num_hidden_layers', 24)
+        # Extraire le text model sous-jacent
+        # Pour Qwen3.5-0.8B (ForCausalLM) : full_model.model
+        self.text_model = full_model.model  # Qwen3_5TextModel
         
-        num_layers = config.predictor_layers if config.predictor_layers > 0 else num_hidden_layers
-        start_layer = num_hidden_layers - num_layers if config.predictor_layers > 0 else 0
-        
-        print(f"  Predictor: using layers {start_layer}-{num_hidden_layers-1} ({num_layers} layers)")
-        
+        # Garder seulement les N dernières layers si besoin
         if config.predictor_layers > 0:
-            # Get layers - handle different model structures for partial layers
-            if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
-                layers = self.model.model.layers
-                embed_tokens = self.model.model.embed_tokens
-                norm = self.model.model.norm
-            elif hasattr(self.model, 'layers'):
-                layers = self.model.layers
-                embed_tokens = self.model.embed_tokens
-                norm = self.model.norm
-            else:
-                raise ValueError(f"Cannot find layers in model type: {type(self.model)}")
-            
-            self.transformer_layers = nn.ModuleList(list(layers)[start_layer:])
-            self.norm = norm
-            self.using_partial_layers = True
-            self.embed_tokens = embed_tokens
-        else:
-            # Use full model - don't need to extract layers
-            self.transformer_layers = None
-            self.using_partial_layers = False
-            self.norm = None
+            n = len(self.text_model.layers)
+            self.text_model.layers = self.text_model.layers[n - config.predictor_layers:]
         
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
+        hidden_size = self.text_model.config.hidden_size
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
         
-        if config.use_regression:
-            self.regression_head = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_size // 2, 2)
-            )
-        
         self.to(config.device)
-        
-        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        print(f"  Predictor trainable params: {trainable:,}")
 
-    def forward(
-        self, 
-        sv: torch.Tensor, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
-    ) -> dict[str, torch.Tensor]:
-        """Forward pass with bi-directional attention.
-        
-        Visual and query embeddings are concatenated and processed with
-        bi-directional attention (causal mask disabled).
-        """
+    def forward(self, sv, input_ids, attention_mask):
         B = sv.size(0)
         device = sv.device
         
-        sv_embeds = self.visual_proj(sv).unsqueeze(1)
+        # Projection visuelle → 1 token visuel
+        sv_embeds = self.visual_proj(sv).unsqueeze(1)  # (B, 1, hidden)
         
-        # Get input embeddings
-        if hasattr(self, 'embed_tokens') and self.embed_tokens is not None:
-            inputs_embeds = self.embed_tokens(input_ids)
-        else:
-            inputs_embeds = self.model.get_input_embeddings()(input_ids)
+        # Embeddings texte
+        inputs_embeds = self.text_model.embed_tokens(input_ids)  # (B, seq, hidden)
         
-        combined_embeds = torch.cat([sv_embeds, inputs_embeds], dim=1)
+        # Concaténation
+        combined_embeds = torch.cat([sv_embeds, inputs_embeds], dim=1)  # (B, 1+seq, hidden)
         
         visual_mask = torch.ones(B, 1, device=device, dtype=attention_mask.dtype)
-        combined_mask = torch.cat([visual_mask, attention_mask], dim=1)
+        combined_mask = torch.cat([visual_mask, attention_mask], dim=1)  # (B, 1+seq)
         
-        seq_len = combined_embeds.size(1)
-        position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(B, -1)
+        # Laisser Qwen3_5TextModel gérer MRoPE, causal mask, layer_types
+        outputs = self.text_model(
+            inputs_embeds=combined_embeds,
+            attention_mask=combined_mask,
+            use_cache=False,
+        )
         
-        hidden_states = combined_embeds
+        hidden_states = outputs.last_hidden_state  # (B, 1+seq, hidden)
         
-        if self.using_partial_layers:
-            for layer in self.transformer_layers:
-                layer_output = layer(
-                    hidden_states,
-                    attention_mask=combined_mask,
-                    position_ids=position_ids,
-                )
-                # Handle both tuple and tensor outputs
-                if isinstance(layer_output, tuple):
-                    hidden_states = layer_output[0]
-                else:
-                    hidden_states = layer_output
-            
-            batch_indices = torch.arange(B, device=device)
-            non_pad_mask = combined_mask.bool()
-            sum_embeddings = (hidden_states * non_pad_mask.unsqueeze(-1)).sum(dim=1)
-            sum_mask = non_pad_mask.sum(dim=1, keepdim=True).float()
-            pooled = sum_embeddings / sum_mask.clamp(min=1)
-        else:
-            outputs = self.model(
-                inputs_embeds=combined_embeds,
-                attention_mask=combined_mask,
-            )
-            hidden_states = outputs.last_hidden_state
-            pooled = hidden_states.mean(dim=1)
+        # Mean pooling sur les tokens non-paddés
+        mask_expanded = combined_mask.bool().unsqueeze(-1).float()
+        pooled = (hidden_states * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1)
         
         results = {"sy_hat": self.output_proj(pooled)}
         if hasattr(self, "regression_head"):
             results["offsets"] = self.regression_head(pooled)
-            
         return results
-
 
 class YEncoder(nn.Module):
     """Qwen3-Embedding-0.6B Y-Encoder (trainable with reduced LR).
@@ -292,17 +205,11 @@ class YEncoder(nn.Module):
             trust_remote_code=True
         )
         
-        for p in self.model.parameters():
-            p.requires_grad = False
-        self.model.eval()
-        
         model_config = AutoConfig.from_pretrained(config.text_model, trust_remote_code=True)
         text_hidden = getattr(model_config, 'hidden_size', 1024)
         
         self.projection = nn.Linear(text_hidden, config.embed_dim)
         
-        self.projection.weight.requires_grad = True
-        self.projection.bias.requires_grad = True
         
         self.tokenizer = AutoTokenizer.from_pretrained(
             config.text_model, 
@@ -325,7 +232,6 @@ class YEncoder(nn.Module):
             batch_size = last_hidden_states.shape[0]
             return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
-    @torch.no_grad()
     def encode(self, texts: list[str], device: str = "cpu") -> torch.Tensor:
         """Encode texts to embeddings using last token pooling."""
         inputs = self.tokenizer(
@@ -403,7 +309,7 @@ class VLJepa(nn.Module):
     
     def trainable_parameters_y_encoder(self):
         """Y-Encoder parameters for separate LR."""
-        return list(self.y_encoder.projection.parameters())
+        return list(self.y_encoder.parameters())  # tout le Y-Encoder
     
     def trainable_parameters_predictor(self):
         """Predictor parameters."""

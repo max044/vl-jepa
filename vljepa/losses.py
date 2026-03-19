@@ -9,61 +9,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class SIGReg(nn.Module):
-    """Signature Regularization based on LeJEPA paper.
-    
-    Penalizes the deviation from a standard Gaussian distribution using
-    characteristic functions. This is the official implementation from LeJEPA.
-    
-    The loss measures the squared error between:
-    - The empirical characteristic function of the embeddings
-    - The characteristic function of a standard Gaussian
-    
-    Reference: LeJEPA (Balestriero & LeCun, 2025) - Section 3.2
-    """
-    
-    def __init__(self, knots: int = 17, t_max: float = 3.0):
+class SIGReg(torch.nn.Module):
+    def __init__(self, knots=17):
         super().__init__()
-        self.t_max = t_max
-        
-        t = torch.linspace(0, t_max, knots, dtype=torch.float32)
-        dt = t_max / (knots - 1)
-        
+        t = torch.linspace(0, 3, knots, dtype=torch.float32)
+        dt = 3 / (knots - 1)
         weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
         weights[[0, -1]] = dt
-        
         window = torch.exp(-t.square() / 2.0)
-        
         self.register_buffer("t", t)
         self.register_buffer("phi", window)
         self.register_buffer("weights", weights * window)
-    
-    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Compute SIGReg loss.
-        
-        Args:
-            embeddings: (B, D) tensor of embeddings
-            
-        Returns:
-            Scalar loss measuring deviation from Gaussian distribution
-        """
-        if embeddings.size(0) < 2:
-            return torch.tensor(0.0, device=embeddings.device, dtype=torch.float32)
-        
-        R = embeddings.size(1)
-        
-        A = torch.randn(R, 256, device=embeddings.device, dtype=embeddings.dtype)
-        A = A / A.norm(p=2, dim=0)
-        
-        x_t = (embeddings @ A).unsqueeze(-1) * self.t
-        
-        cos_part = x_t.cos().mean(dim=-3)
-        sin_part = x_t.sin().mean(dim=-3)
-        
-        err = (cos_part - self.phi).square() + sin_part.square()
-        
-        statistic = (err @ self.weights) * embeddings.size(0)
-        
+
+    def forward(self, proj):
+        A = torch.randn(proj.size(-1), 256, device="cuda")
+        A = A.div_(A.norm(p=2, dim=0))
+        x_t = (proj @ A).unsqueeze(-1) * self.t
+        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
+        statistic = (err @ self.weights) * proj.size(-2)
         return statistic.mean()
 
 

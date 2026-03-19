@@ -174,13 +174,23 @@ predictor_params = [p for p in model.predictor.parameters() if p.requires_grad]
 if predictor_params:
     params_with_lr.append({"params": predictor_params, "lr": config.lr})
 
-# Y-Encoder projection (LR * multiplier)
+# Y-Encoder — modèle complet + projection au même LR réduit
+y_encoder_params = [p for p in model.y_encoder.model.parameters() if p.requires_grad]
+if y_encoder_params:
+    params_with_lr.append({
+        "params": y_encoder_params,
+        "lr": config.lr * config.y_encoder_lr_multiplier
+    })
+
 y_proj_params = [p for p in model.y_encoder.projection.parameters() if p.requires_grad]
 if y_proj_params:
     params_with_lr.append({
         "params": y_proj_params,
         "lr": config.lr * config.y_encoder_lr_multiplier
     })
+
+total_trainable = sum(p.numel() for g in params_with_lr for p in g["params"])
+print(f"Total trainable params: {total_trainable:,}")
 
 optimizer = torch.optim.AdamW(
     params_with_lr,
