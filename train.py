@@ -55,6 +55,7 @@ def parse_args():
     parser.add_argument("--wandb-entity", type=str, default=None, help="W&B team/entity")
     parser.add_argument("--wandb-run-name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb-id", type=str, default=None, help="W&B run ID to resume")
+    parser.add_argument("--max-steps", type=int, default=None, help="Limit training steps for quick experiments")
     return parser.parse_args()
 
 
@@ -502,6 +503,11 @@ def main():
         )
 
         global_step += result["num_batches"]
+        
+        # Check if we've reached max_steps
+        if args.max_steps and global_step >= args.max_steps:
+            print(f"\n🛑 Reached max_steps ({args.max_steps}). Stopping training.")
+            break
 
         print(
             f"  → Avg loss: {result['avg_loss']:.4f} | "
