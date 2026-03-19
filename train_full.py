@@ -1,0 +1,641 @@
+"""VL-JEPA Training Script.
+
+Train the predictor to align video+query embeddings with target text embeddings
+using bidirectional InfoNCE loss on Charades-STA.
+
+Usage:
+    python train.py                          # Default settings
+    python train.py --debug --epochs 2       # Quick sanity check
+    python train.py --device cuda --epochs 20 --batch-size 16  # Full training on GPU
+    python train.py --device cuda --wandb-project vl-jepa      # With W&B tracking
+"""
+
+import argparse
+from dataclasses import asdict
+import os
+import time
+import warnings
+
+import torch
+from torch.utils.data import DataLoader
+
+try:
+    import wandb
+    HAS_WANDB = True
+except ImportError:
+    HAS_WANDB = False
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from vljepa.config import Config
+from vljepa.dataset import CharadesSTADataset, collate_fn
+from vljepa.models import VLJepa
+from vljepa.losses import vl_jepa_loss, SIGReg
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train VL-JEPA")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--debug-samples", type=int, default=None, help="Limit samples in debug mode")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument("--num-workers", type=int, default=None)
+    
+    # Optional features
+    parser.add_argument("--use-regression", action="store_true", help="Enable timestamp regression head")
+    parser.add_argument("--use-learnable-temp", action="store_true", help="Enable learnable InfoNCE temperature")
+
+    # W&B arguments
+    parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
+    parser.add_argument("--wandb-project", type=str, default="vl-jepa", help="W&B project name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="W&B team/entity")
+    parser.add_argument("--wandb-run-name", type=str, default=None, help="W&B run name")
+    parser.add_argument("--wandb-id", type=str, default=None, help="W&B run ID to resume")
+    parser.add_argument("--max-steps", type=int, default=None, help="Limit training steps for quick experiments")
+    return parser.parse_args()
+
+
+def get_lr_scheduler(optimizer, warmup_steps, total_steps, last_epoch=-1):
+    """Cosine schedule with linear warmup."""
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / max(warmup_steps, 1)
+        progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+        return max(0.1, 0.5 * (1 + __import__("math").cos(__import__("math").pi * progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
+
+
+def train_one_epoch(model, dataloader, optimizer, scheduler, config, epoch, global_step, scaler=None, sigreg=None, grad_accum=1):
+    """Run one training epoch."""
+    model.predictor.train()
+    model.y_encoder.projection.train()
+
+    total_loss = 0.0
+    total_infonce = 0.0
+    num_batches = 0
+    start_time = time.time()
+    
+    optimizer.zero_grad()
+
+    for batch_idx, batch in enumerate(dataloader):
+        if batch is None:
+            continue
+
+        pixel_values = model.x_encoder.preprocess_frames(
+            batch["frames"], device=config.device
+        )
+
+        query_tokens = model.query_encoder.tokenize(
+            batch["queries"], device=config.device
+        )
+
+        use_amp = config.device == "cuda" and scaler is not None
+        with torch.autocast(device_type="cuda", enabled=use_amp, dtype=torch.bfloat16):
+            outputs = model(
+                pixel_values,
+                query_tokens["input_ids"],
+                query_tokens["attention_mask"],
+                batch["captions"],
+            )
+            
+            offset_targets = batch["offset_targets"]
+            if isinstance(offset_targets, list):
+                offset_targets = torch.tensor(offset_targets, dtype=torch.float32, device=config.device)
+
+            loss, metrics = vl_jepa_loss(
+                outputs["sy_hat"], outputs["sy"],
+                temperature=outputs["temperature"],
+                sigreg_weight=config.sigreg_weight,
+                offsets=outputs.get("offsets"),
+                offset_targets=offset_targets if config.use_regression and offset_targets is not None else None,
+                regression_weight=config.regression_loss_weight,
+                sigreg_module=sigreg
+            )
+            
+            loss = loss / grad_accum
+
+        if use_amp:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        
+        if (batch_idx + 1) % grad_accum == 0 or batch_idx == len(dataloader) - 1:
+            if use_amp:
+                scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.trainable_parameters(), config.grad_clip)
+            
+            if use_amp:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            
+            optimizer.zero_grad()
+            scheduler.step()
+
+        total_loss += metrics["loss/total"] * grad_accum
+        total_infonce += metrics["loss/infonce"]
+        num_batches += 1
+
+        if HAS_WANDB and wandb.run:
+            wandb.log({
+                "train/loss": metrics["loss/total"],
+                "train/infonce": metrics["loss/infonce"],
+                "train/lr": optimizer.param_groups[0]["lr"],
+            }, step=global_step + batch_idx)
+
+        if (batch_idx + 1) % 10 == 0 or batch_idx == 0:
+            lr = optimizer.param_groups[0]["lr"]
+            elapsed = time.time() - start_time
+            print(
+                f"  [{batch_idx+1}/{len(dataloader)}] "
+                f"loss={metrics['loss/total']:.4f} "
+                f"infonce={metrics['loss/infonce']:.4f} "
+                f"lr={lr:.2e} "
+                f"({elapsed:.1f}s)"
+            )
+
+    avg_loss = total_loss / max(num_batches, 1)
+    avg_infonce = total_infonce / max(num_batches, 1)
+    elapsed = time.time() - start_time
+
+    return {
+        "avg_loss": avg_loss,
+        "avg_infonce": avg_infonce,
+        "elapsed": elapsed,
+        "num_batches": num_batches,
+    }
+
+
+@torch.no_grad()
+def validate_one_epoch(model, dataloader, config):
+    """Run one validation epoch."""
+    model.predictor.eval()
+    model.y_encoder.projection.eval()
+
+    total_loss = 0.0
+    total_infonce = 0.0
+    num_batches = 0
+    start_time = time.time()
+
+    for batch_idx, batch in enumerate(dataloader):
+        if batch is None:
+            continue
+
+        # Preprocess frames using CLIP processor
+        pixel_values = model.x_encoder.preprocess_frames(
+            batch["frames"], device=config.device
+        )
+
+        # Tokenize queries
+        query_tokens = model.query_encoder.tokenize(
+            batch["queries"], device=config.device
+        )
+
+        with torch.autocast(device_type="cuda", enabled=config.device == "cuda"):
+            outputs = model(
+                pixel_values,
+                query_tokens["input_ids"],
+                query_tokens["attention_mask"],
+                batch["captions"],
+            )
+
+            # Extract regression targets from batch
+            offset_targets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=config.device)
+
+            loss, metrics = vl_jepa_loss(
+                outputs["sy_hat"], outputs["sy"],
+                temperature=outputs["temperature"],
+                sigreg_weight=config.sigreg_weight,
+                offsets=outputs.get("offsets"),
+                offset_targets=offset_targets if config.use_regression else None,
+                regression_weight=config.regression_loss_weight
+            )
+
+        total_loss += metrics["loss/total"]
+        total_infonce += metrics["loss/infonce"]
+        num_batches += 1
+
+    avg_loss = total_loss / max(num_batches, 1)
+    avg_infonce = total_infonce / max(num_batches, 1)
+    elapsed = time.time() - start_time
+
+    return {
+        "avg_loss": avg_loss,
+        "avg_infonce": avg_infonce,
+        "elapsed": elapsed,
+        "num_batches": num_batches,
+    }
+
+
+def save_checkpoint(model, optimizer, scheduler, epoch, global_step, loss, path):
+    """Save a training checkpoint."""
+    state = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "predictor_state_dict": model.predictor.state_dict(),
+        "y_projection_state_dict": model.y_encoder.projection.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+        "loss": loss,
+    }
+    if hasattr(model, "logit_scale"):
+        state["logit_scale"] = model.logit_scale.data
+    torch.save(state, path)
+
+
+def log_artifact(path, name, artifact_type, metadata=None, aliases=None):
+    """Upload a checkpoint as a W&B Artifact with versioning and aliases."""
+    if not (HAS_WANDB and wandb.run):
+        return
+    artifact = wandb.Artifact(
+        name=name,
+        type=artifact_type,
+        metadata=metadata or {},
+    )
+    artifact.add_file(path)
+    # aliases should be a list like ['best', 'latest']
+    wandb.log_artifact(artifact, aliases=aliases or [])
+
+
+def load_checkpoint(model, optimizer, scheduler, path, device):
+    """Load checkpoint and return (start_epoch, global_step)."""
+    ckpt = torch.load(path, map_location=device, weights_only=True)
+    model.predictor.load_state_dict(ckpt["predictor_state_dict"])
+    model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
+    
+    if "logit_scale" in ckpt and hasattr(model, "logit_scale"):
+        model.logit_scale.data.copy_(ckpt["logit_scale"])
+        print(f"  Loaded logit_scale: {ckpt['logit_scale'].item():.4f}")
+
+    if optimizer is not None and "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        
+    start_epoch = ckpt["epoch"] + 1
+    global_step = ckpt.get("global_step", start_epoch * 232) # Fallback
+    
+    if scheduler is not None and "scheduler_state_dict" in ckpt and ckpt["scheduler_state_dict"]:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    
+    # Suppress false-positive PyTorch warning on first batch after resume.
+    # The warning fires because optimizer._step_count resets to 0 on load_state_dict,
+    # but our code order (optimizer.step() THEN scheduler.step()) is correct.
+    warnings.filterwarnings(
+        "ignore",
+        message="Detected call of `lr_scheduler.step\\(\\)` before `optimizer.step\\(\\)`",
+        category=UserWarning,
+    )
+    
+    print(f"✅ Checkpoint loaded: Finished Epoch {ckpt['epoch'] + 1} (Step {global_step}, Loss {ckpt['loss']:.4f})")
+    return start_epoch, global_step
+
+
+def main():
+    args = parse_args()
+    
+    # Load base config
+    config = Config()
+    
+    # Load from YAML if specified (or try default)
+    import yaml
+    base_config_path = os.path.join("configs", "base.yaml")
+    if os.path.exists(base_config_path):
+        print(f"Loading config from {base_config_path}")
+        with open(base_config_path, "r") as f:
+            yaml_config = yaml.safe_load(f)
+            # Filter and update
+            for k, v in yaml_config.items():
+                if hasattr(config, k):
+                    setattr(config, k, v)
+
+    # CLI Overrides (legacy)
+    if args.epochs is not None:
+        config.epochs = args.epochs
+    if args.batch_size is not None:
+        config.batch_size = args.batch_size
+    if args.lr is not None:
+        config.lr = args.lr
+    if args.device is not None:
+        config.device = args.device
+    if args.debug:
+        config.debug = True
+    if args.debug_samples is not None:
+        config.debug_samples = args.debug_samples
+    if args.num_workers is not None:
+        config.num_workers = args.num_workers
+    
+    # Optional feature overrides
+    if args.use_regression:
+        config.use_regression = True
+    if args.use_learnable_temp:
+        config.use_learnable_temp = True
+
+    # Apply additional overrides if we implement a generic --override
+    # For now, we'll just use the legacy ones above.
+    # To be proactive, let's add a generic override support.
+
+    # ── W&B Init ────────────────────────────────────────────
+    use_wandb = HAS_WANDB and not args.no_wandb
+    if use_wandb:
+        wandb_kwargs = {
+            "project": args.wandb_project,
+            "entity": args.wandb_entity,
+            "name": args.wandb_run_name,
+            "config": asdict(config),
+            "tags": [t for t in ["train", config.device] + (["debug"] if config.debug else []) if t],
+        }
+        
+        # Handle Resume Mode
+        if args.wandb_id:
+            wandb_kwargs["id"] = args.wandb_id
+            wandb_kwargs["resume"] = "allow"
+            print(f"🔄 Attempting to resume W&B run: {args.wandb_id}")
+            
+        wandb.init(**wandb_kwargs)
+        print(f"W&B run: {wandb.run.url}")
+    elif not HAS_WANDB and not args.no_wandb:
+        print("Warning: wandb not installed. Install with `pip install wandb` for experiment tracking.")
+
+    print(f"Device: {config.device}")
+    print(f"Debug: {config.debug}")
+    print(f"Epochs: {config.epochs}, Batch size: {config.batch_size}, LR: {config.lr}")
+    print(f"Grad Accumulation: {config.grad_accumulation}")
+    print(f"Effective Batch Size: {config.batch_size * config.grad_accumulation}")
+    print(f"Dtype: {config.dtype}")
+    print()
+
+    print("Loading models...")
+    model = VLJepa(config)
+    model.to(config.device)
+
+    param_counts = model.count_parameters()
+    total_trainable = sum(v["trainable"] for v in param_counts.values())
+    print(f"\nParameter counts:")
+    for name, counts in param_counts.items():
+        print(f"  {name}: {counts['total']:,} total, {counts['trainable']:,} trainable")
+    print(f"  TOTAL trainable: {total_trainable:,}\n")
+
+    g1 = {"params": model.trainable_parameters_predictor(), "lr": config.lr, "weight_decay": config.weight_decay}
+    g2 = {"params": model.trainable_parameters_y_encoder(), "lr": config.lr * config.y_encoder_lr_multiplier, "weight_decay": 0.0}
+    optimizer = torch.optim.AdamW([g1, g2])
+    
+    print(f"Optimizer: Predictor LR={config.lr}, Y-Encoder LR={config.lr * config.y_encoder_lr_multiplier}")
+
+    # Dataset
+    print("Loading training dataset...")
+    full_train_dataset = CharadesSTADataset(
+        config.anno_train, config.videos_dir, config, split="train"
+    )
+
+    # Split into train and validation
+    val_size = int(len(full_train_dataset) * config.val_split)
+    train_size = len(full_train_dataset) - val_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        full_train_dataset, 
+        [train_size, val_size],
+        generator=torch.Generator().manual_seed(42) # Fixed seed for reproducibility
+    )
+    # Set splits for logging
+    val_dataset.dataset.split = "val"
+
+    print(f"Dataset split: {train_size} training samples, {val_size} validation samples")
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=config.num_workers,
+        collate_fn=collate_fn,
+        drop_last=True,
+        pin_memory=config.device == "cuda",
+    )
+
+    # Validation DataLoader (limited for faster experiments)
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.num_workers,
+        collate_fn=collate_fn,
+        drop_last=False,
+        pin_memory=config.device == "cuda",
+    )
+    
+    # Limit validation samples for faster experiments
+    if config.val_samples > 0 and config.val_samples < len(val_loader.dataset):
+        print(f"Limiting validation to {config.val_samples} samples for faster experiments")
+        val_loader.dataset.indices = val_loader.dataset.indices[:config.val_samples]
+
+    # Optional: resume
+    start_epoch = 0
+    current_global_step = 0
+    checkpoint_path = args.checkpoint
+    
+    # Initialize scheduler with default (will be updated if resuming)
+    total_steps = len(train_loader) * config.epochs
+    scheduler = get_lr_scheduler(optimizer, config.warmup_steps, total_steps)
+
+    if checkpoint_path:
+        # Check if it's a W&B artifact path (contains / or :)
+        if (":" in checkpoint_path or "/" in checkpoint_path) and not os.path.exists(checkpoint_path):
+            if use_wandb:
+                print(f"📥 Downloading checkpoint from W&B Artifact: {checkpoint_path}")
+                try:
+                    artifact = wandb.run.use_artifact(checkpoint_path, type='model')
+                    artifact_dir = artifact.download()
+                    # Find the .pth file in the artifact
+                    checkpoint_path = os.path.join(artifact_dir, "best.pth")
+                    if not os.path.exists(checkpoint_path):
+                        # Try last.pth or any .pth
+                        pths = [f for f in os.listdir(artifact_dir) if f.endswith(".pth")]
+                        if pths:
+                            checkpoint_path = os.path.join(artifact_dir, pths[0])
+                except Exception as e:
+                    print(f"❌ Failed to download artifact: {e}")
+                    checkpoint_path = None
+            else:
+                print("⚠ W&B is disabled, cannot download artifact.")
+                checkpoint_path = None
+
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            # Pass scheduler to load its state correctly
+            start_epoch, current_global_step = load_checkpoint(model, optimizer, scheduler, checkpoint_path, config.device)
+        else:
+            print(f"⚠ Could not find checkpoint: {args.checkpoint}. Starting from scratch.")
+
+    sigreg = None
+    if config.sigreg_weight > 0:
+        sigreg = SIGReg().to(config.device)
+        print(f"SIGReg initialized (weight={config.sigreg_weight})")
+
+    # GradScaler only for mixed precision (bf16 or fp16)
+    use_amp = config.device == "cuda" and config.dtype in ("bf16", "fp16")
+    scaler = None
+    if use_amp:
+        scaler = torch.amp.GradScaler('cuda')
+
+    # Training loop
+    best_loss = float("inf")
+    print(f"Starting training ({len(train_loader)} batches/epoch)...\n")
+
+    # Sync global_step with W&B if resuming
+    if use_wandb and wandb.run and wandb.run.step > 0:
+        global_step = wandb.run.step
+        print(f"📊 W&B Synced: Starting from global step {global_step}")
+    else:
+        global_step = current_global_step
+
+    patience_counter = 0
+
+    for epoch in range(start_epoch, config.epochs):
+        print(f"═══ Epoch {epoch+1}/{config.epochs} ═══")
+
+        # Ensure frozen parts are in eval mode
+        model.eval()
+        
+        result = train_one_epoch(
+            model, train_loader, optimizer, scheduler, config, epoch, global_step, scaler,
+            sigreg=sigreg, grad_accum=config.grad_accumulation
+        )
+
+        global_step += result["num_batches"]
+        
+        # Check if we've reached max_steps
+        if args.max_steps and global_step >= args.max_steps:
+            print(f"\n🛑 Reached max_steps ({args.max_steps}). Stopping training.")
+            break
+
+        print(
+            f"  → Avg loss: {result['avg_loss']:.4f} | "
+            f"InfoNCE: {result['avg_infonce']:.4f} | "
+            f"Time: {result['elapsed']:.1f}s | "
+            f"Batches: {result['num_batches']}"
+        )
+
+        # ── W&B: log epoch metrics ──────────────────────────
+        if use_wandb:
+            wandb.log({
+                "epoch": epoch + 1,
+                "epoch/avg_loss": result["avg_loss"],
+                "epoch/avg_infonce": result["avg_infonce"],
+                "epoch/time_s": result["elapsed"],
+                "epoch/lr": optimizer.param_groups[0]["lr"],
+            }, step=global_step)
+
+        # ── Validation Phase ────────────────────────────────
+        val_result = None
+        if (epoch + 1) % config.val_every == 0 or epoch == config.epochs - 1:
+            print(f"  🔍 Validating...")
+            val_result = validate_one_epoch(model, val_loader, config)
+            print(
+                f"  → Val loss: {val_result['avg_loss']:.4f} | "
+                f"Val InfoNCE: {val_result['avg_infonce']:.4f}"
+            )
+            
+            if use_wandb:
+                wandb.log({
+                    "val/loss": val_result["avg_loss"],
+                    "val/infonce": val_result["avg_infonce"],
+                }, step=global_step)
+
+        # Save checkpoints
+        if (epoch + 1) % config.save_every == 0 or epoch == config.epochs - 1:
+            # 1. Save descriptive unique checkpoint
+            ckpt_name = f"vljepa_e{epoch+1}_s{global_step}.pth"
+            ckpt_path = os.path.join(config.checkpoint_dir, ckpt_name)
+            save_checkpoint(model, optimizer, scheduler, epoch, global_step, result["avg_loss"], ckpt_path)
+            
+            # 2. Update local 'last.pth' link (copy for simplicity)
+            last_path = os.path.join(config.checkpoint_dir, "last.pth")
+            import shutil
+            shutil.copy2(ckpt_path, last_path)
+            
+            print(f"  💾 Saved checkpoint: {ckpt_path} (updated last.pth)")
+            
+            # 3. Log to W&B with 'latest' alias
+            artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
+            log_artifact(ckpt_path, artifact_name, "model", metadata={
+                "epoch": epoch + 1, "loss": result["avg_loss"], "global_step": global_step,
+                "run_name": wandb.run.name if wandb.run else "local"
+            }, aliases=["latest"])
+
+        # Update best based on validation ONLY
+        if val_result:
+            current_val_loss = val_result["avg_loss"]
+            metric_name = "val/loss"
+
+            if current_val_loss < best_loss:
+                best_loss = current_val_loss
+                patience_counter = 0  # Reset patience on improvement
+                
+                # 1. Unique best filename
+                best_ckpt_name = f"vljepa_best_e{epoch+1}_s{global_step}.pth"
+                best_ckpt_path = os.path.join(config.checkpoint_dir, best_ckpt_name)
+                save_checkpoint(model, optimizer, scheduler, epoch, global_step, current_val_loss, best_ckpt_path)
+                
+                # 2. Update local 'best.pth'
+                best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
+                import shutil
+                shutil.copy2(best_ckpt_path, best_generic_path)
+                
+                print(f"  ⭐ New best! ({metric_name}) Saved: {best_ckpt_path}")
+                
+                # 3. Log to W&B with 'best' alias
+                artifact_name = f"model-{wandb.run.id}" if wandb.run else "vl-jepa-model"
+                log_artifact(best_ckpt_path, artifact_name, "model", metadata={
+                    "epoch": epoch + 1, metric_name: best_loss, "global_step": global_step,
+                    "run_name": wandb.run.name if wandb.run else "local"
+                }, aliases=["best"])
+            else:
+                patience_counter += 1
+                print(f"  ⚠️ No improvement for {patience_counter} validation(s).")
+
+            # Early Stopping Check
+            if config.early_stopping_patience > 0 and patience_counter >= config.early_stopping_patience:
+                print(f"🛑 Early stopping triggered after {epoch + 1} epochs due to no improvement in the last {patience_counter} validations.")
+                break
+
+        print()
+
+    print(f"Training complete! Best loss: {best_loss:.4f}")
+
+    # ── Post-Training Test ──────────────────────────────────
+    print(f"\n🚀 Running final evaluation on the test set using the best checkpoint...")
+    
+    # We load the best.pth to ensure we test the optimal model found
+    best_generic_path = os.path.join(config.checkpoint_dir, "best.pth")
+    if os.path.exists(best_generic_path):
+        import subprocess
+        eval_cmd = [
+            "python3", "eval.py", 
+            "--checkpoint", best_generic_path,
+            "--device", config.device
+        ]
+        if use_wandb:
+            # We don't disable wandb for eval if it was used for training,
+            # but we want it to log in the same project
+            eval_cmd.extend(["--wandb-project", args.wandb_project])
+            if wandb.run:
+                eval_cmd.extend(["--wandb-run-path", f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}"])
+
+        try:
+            subprocess.run(eval_cmd, check=True)
+            print("✅ Final evaluation completed successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Final evaluation failed with error: {e}")
+    else:
+        print(f"⚠️ Could not find {best_generic_path} for final evaluation.")
+
+    # ── W&B: finalize ──────────────────────────────────────
+    if use_wandb:
+        wandb.summary["best_loss"] = best_loss
+        wandb.summary["total_epochs"] = config.epochs
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    main()
