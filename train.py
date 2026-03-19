@@ -280,7 +280,7 @@ while True:
         # Track loss
         train_loss = loss.item() * config.grad_accumulation
         epoch_loss += train_loss
-        epoch_infonce += loss_dict["infonce"]
+        epoch_infonce += loss_dict["loss/infonce"]
         num_batches += 1
         
         # Smooth loss for display
@@ -358,7 +358,7 @@ while True:
                 )
                 
                 val_loss += loss.item()
-                val_infonce += loss_dict["infonce"]
+                val_infonce += loss_dict["loss/infonce"]
                 val_batches += 1
         
         if val_batches > 0:
@@ -415,7 +415,7 @@ with torch.no_grad():
         )
 
         final_val_loss += loss.item()
-        final_val_infonce += loss_dict["infonce"]
+        final_val_infonce += loss_dict["loss/infonce"]
         val_batches += 1
 
 if val_batches > 0:
