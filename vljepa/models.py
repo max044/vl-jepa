@@ -224,11 +224,16 @@ class Predictor(nn.Module):
         
         if self.using_partial_layers:
             for layer in self.transformer_layers:
-                hidden_states = layer(
+                layer_output = layer(
                     hidden_states,
                     attention_mask=combined_mask,
                     position_ids=position_ids,
-                )[0]
+                )
+                # Handle both tuple and tensor outputs
+                if isinstance(layer_output, tuple):
+                    hidden_states = layer_output[0]
+                else:
+                    hidden_states = layer_output
             
             batch_indices = torch.arange(B, device=device)
             non_pad_mask = combined_mask.bool()
