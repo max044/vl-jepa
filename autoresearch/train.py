@@ -437,35 +437,23 @@ while True:
                 val_loss += loss.item()
                 val_infonce += loss_dict["loss/infonce"]
                 
-                # Compute temporal predictions for IoU
-                batch_size = len(batch["queries"])
-                for i in range(batch_size):
-                    gt_start = batch["starts"][i]
-                    gt_end = batch["ends"][i]
-                    
-                    if config.use_regression and offsets is not None:
-                        # Direct regression prediction
-                        # The model sees the GT window [gt_start, gt_end] with jitter
-                        # offset_targets in dataset are normalized to this window
+                # Compute temporal predictions for IoU (regression only)
+                # For sliding window, true IoU requires scoring all windows with the model
+                # which needs reloading each window's frames — not feasible in this loop.
+                # We only compute mIoU for regression runs.
+                if config.use_regression and offsets is not None:
+                    batch_size = len(batch["queries"])
+                    for i in range(batch_size):
+                        gt_start = batch["starts"][i]
+                        gt_end = batch["ends"][i]
                         offset_pred = offsets[i]  # [start_offset, end_offset]
                         pred_start, pred_end = predict_from_offsets(offset_pred, gt_start, gt_end)
-                    else:
-                        # Sliding window: score windows using embedding similarity
-                        # Without reloading video frames, we use a center-of-mass heuristic
-                        # (proper scoring requires loading each window's frames separately)
-                        video_duration = gt_end - gt_start + 10.0  # Approximate video duration
-                        pred_start, pred_end = sliding_window_prediction(
-                            video_duration=video_duration,
-                            window_sizes=config.window_sizes,
-                            window_stride=config.window_stride,
-                        )
-                    
-                    batch_predictions.append({
-                        "gt_start": gt_start,
-                        "gt_end": gt_end,
-                        "pred_start": pred_start,
-                        "pred_end": pred_end,
-                    })
+                        batch_predictions.append({
+                            "gt_start": gt_start,
+                            "gt_end": gt_end,
+                            "pred_start": pred_start,
+                            "pred_end": pred_end,
+                        })
                 
                 val_batches += 1
         
