@@ -44,11 +44,11 @@ EXPERIMENT_CONFIGS = [
     }),
 ]
 
-# Default parameters (baseline)
+# Default parameters (best found so far)
 DEFAULT_PARAMS = {
-    "LEARNING_RATE": "1e-4",
-    "TEMPERATURE": "0.07",
-    "SIGREG_WEIGHT": "0.1",
+    "LEARNING_RATE": "3e-4",
+    "TEMPERATURE": "0.03",
+    "SIGREG_WEIGHT": "0.05",
 }
 
 def read_train_py():
