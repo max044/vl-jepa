@@ -468,9 +468,9 @@ def main():
 
     # GradScaler only for mixed precision (bf16 or fp16)
     use_amp = config.device == "cuda" and config.dtype in ("bf16", "fp16")
-    scaler = torch.amp.GradScaler('cuda', enabled=use_amp) if config.device == "cuda" else None
-    if scaler is not None and not use_amp:
-        scaler = None
+    scaler = None
+    if use_amp:
+        scaler = torch.amp.GradScaler('cuda')
 
     # Training loop
     best_loss = float("inf")
