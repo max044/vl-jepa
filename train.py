@@ -413,7 +413,7 @@ def main():
         pin_memory=config.device == "cuda",
     )
 
-    # Validation DataLoader
+    # Validation DataLoader (limited for faster experiments)
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
@@ -423,6 +423,11 @@ def main():
         drop_last=False,
         pin_memory=config.device == "cuda",
     )
+    
+    # Limit validation samples for faster experiments
+    if config.val_samples > 0 and config.val_samples < len(val_loader.dataset):
+        print(f"Limiting validation to {config.val_samples} samples for faster experiments")
+        val_loader.dataset.indices = val_loader.dataset.indices[:config.val_samples]
 
     # Optional: resume
     start_epoch = 0
