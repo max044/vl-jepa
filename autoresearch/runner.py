@@ -104,14 +104,19 @@ def run_experiment(name, params, best_loss_so_far):
     # Parse results from output
     output = result.stdout + result.stderr
     
-    val_loss = None
+    best_mIoU = None
+    best_R1 = None
     peak_vram = None
     
     for line in output.split('\n'):
-        if 'val_loss:' in line and 'best_val_loss' not in line:
-            match = re.search(r'val_loss:\s+([\d.]+)', line)
+        if 'best_mIoU:' in line:
+            match = re.search(r'best_mIoU:\s+([\d.]+)', line)
             if match:
-                val_loss = float(match.group(1))
+                best_mIoU = float(match.group(1))
+        if 'best_R@1:' in line:
+            match = re.search(r'best_R@1:\s+([\d.]+)', line)
+            if match:
+                best_R1 = float(match.group(1))
         if 'peak_vram_mb:' in line:
             match = re.search(r'peak_vram_mb:\s+([\d.]+)', line)
             if match:
@@ -122,10 +127,14 @@ def run_experiment(name, params, best_loss_so_far):
         with open("autoresearch/run.log", "r") as f:
             log_content = f.read()
             for line in log_content.split('\n'):
-                if 'val_loss:' in line and 'best_val_loss' not in line:
-                    match = re.search(r'val_loss:\s+([\d.]+)', line)
+                if 'best_mIoU:' in line:
+                    match = re.search(r'best_mIoU:\s+([\d.]+)', line)
                     if match:
-                        val_loss = float(match.group(1))
+                        best_mIoU = float(match.group(1))
+                if 'best_R@1:' in line:
+                    match = re.search(r'best_R@1:\s+([\d.]+)', line)
+                    if match:
+                        best_R1 = float(match.group(1))
                 if 'peak_vram_mb:' in line:
                     match = re.search(r'peak_vram_mb:\s+([\d.]+)', line)
                     if match:
@@ -136,7 +145,8 @@ def run_experiment(name, params, best_loss_so_far):
     result_data = {
         "name": name,
         "params": params,
-        "val_loss": val_loss,
+        "best_mIoU": best_mIoU,
+        "best_R1": best_R1,
         "peak_vram": peak_vram,
         "elapsed": elapsed,
         "timestamp": datetime.now().isoformat()
@@ -148,7 +158,7 @@ def main():
     os.chdir("/root/vl-jepa")
     
     results = []
-    best_loss = float('inf')
+    best_mIoU = 0.0
     best_params = DEFAULT_PARAMS.copy()  # Start with defaults
     
     print("Starting AutoResearch Loop")
@@ -162,26 +172,27 @@ def main():
         print(f"Using params: {experiment_params}")
         
         # Run experiment
-        result = run_experiment(name, experiment_params, best_loss)
+        result = run_experiment(name, experiment_params, best_mIoU)
         results.append(result)
         
         # Record result
-        is_improvement = result["val_loss"] < best_loss
+        result_mIoU = result.get("best_mIoU", 0.0) or 0.0
+        is_improvement = result_mIoU > best_mIoU
         status = "keep" if is_improvement else "discard"
         
         if is_improvement:
-            print(f"\n✓ NEW BEST! {result['val_loss']:.6f} < {best_loss:.6f}")
-            best_loss = result["val_loss"]
+            print(f"\n✓ NEW BEST! mIoU={result_mIoU:.6f} > {best_mIoU:.6f}")
+            best_mIoU = result_mIoU
             # Update best_params with the params that worked
             best_params = experiment_params.copy()
             print(f"✓ Updated best params: {best_params}")
         else:
-            print(f"\n✗ Not best: {result['val_loss']:.6f} >= {best_loss:.6f}")
+            print(f"\n✗ Not best: mIoU={result_mIoU:.6f} <= {best_mIoU:.6f}")
         
         # Save to results file
         with open("autoresearch/results.tsv", "a") as f:
             param_str = ",".join([f"{k}={v}" for k, v in experiment_params.items()])
-            f.write(f"{name}\t{result.get('val_loss', 'N/A')}\t{result.get('peak_vram', 'N/A')}\t{status}\t{param_str}\n")
+            f.write(f"{name}\t{result.get('best_mIoU', 'N/A')}\t{result.get('best_R1', 'N/A')}\t{result.get('peak_vram', 'N/A')}\t{status}\t{param_str}\n")
         
         # Next experiment starts immediately (no wait needed, each run has its own 5min budget)
     
@@ -190,17 +201,19 @@ def main():
     print("AUTO-RESEARCH COMPLETE")
     print("="*60)
     print(f"\nBest configuration found:")
-    print(f"  val_loss: {best_loss:.6f}")
+    print(f"  best_mIoU: {best_mIoU:.6f}")
     print(f"  params: {best_params}")
     print("\nAll results:")
-    print("-" * 60)
-    print(f"{'Experiment':<20} {'Loss':<12} {'Status':<10} {'Params':<30}")
-    print("-" * 60)
+    print("-" * 70)
+    print(f"{'Experiment':<20} {'mIoU':<12} {'R@1':<10} {'Status':<10} {'Params':<20}")
+    print("-" * 70)
     for r in results:
-        params_str = ",".join([f"{k}={v}" for k, v in r['params'].items()])[:30]
-        status = "✓ BEST" if r['val_loss'] == best_loss else ("keep" if r['val_loss'] < best_loss * 1.1 else "discard")
-        print(f"{r['name']:<20} {r.get('val_loss', 'N/A'):<12.6f} {status:<10} {params_str}")
-    print("-" * 60)
+        params_str = ",".join([f"{k}={v}" for k, v in r['params'].items()])[:20]
+        result_mIoU = r.get('best_mIoU', 0.0) or 0.0
+        result_R1 = r.get('best_R1', 0.0) or 0.0
+        status = "✓ BEST" if result_mIoU == best_mIoU else ("keep" if result_mIoU > best_mIoU * 0.9 else "discard")
+        print(f"{r['name']:<20} {result_mIoU:<12.6f} {result_R1:<10.4f} {status:<10} {params_str}")
+    print("-" * 70)
     print(f"\nResults saved to: autoresearch/results.tsv")
 
 if __name__ == "__main__":

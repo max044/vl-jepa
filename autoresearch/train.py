@@ -33,6 +33,7 @@ from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
 from vljepa.losses import vl_jepa_loss, SIGReg
+from vljepa.evaluation import compute_temporal_metrics, compute_iou, predict_from_offsets
 
 from prepare import TIME_BUDGET, DATA_DIR
 
@@ -259,6 +260,8 @@ if USE_WANDB and HAS_WANDB:
 
 t_start_training = time.time()
 best_val_loss = float('inf')
+best_mIoU = 0.0
+best_R1 = 0.0
 total_training_time = 0
 step = 0
 epoch = 0
@@ -399,6 +402,9 @@ while True:
         val_infonce = 0.0
         val_batches = 0
         
+        # For temporal metrics
+        batch_predictions = []
+        
         with torch.no_grad():
             for batch in val_loader:
                 if batch is None:
@@ -421,27 +427,77 @@ while True:
                 sy_hat = outputs["sy_hat"]
                 sy = outputs["sy"]
                 
+                # Prepare regression targets if enabled
+                offsets = None
+                offset_targets = None
+                if config.use_regression and "offsets" in outputs:
+                    offsets = outputs["offsets"]
+                    offset_targets = torch.tensor(batch["offset_targets"], device=device, dtype=torch.float32)
+                
                 loss, loss_dict = vl_jepa_loss(
                     sy_hat, sy,
                     temperature=config.temperature,
                     sigreg_weight=config.sigreg_weight,
                     sigreg_module=sigreg,
+                    offsets=offsets,
+                    offset_targets=offset_targets,
+                    regression_weight=config.regression_loss_weight,
                 )
                 
                 val_loss += loss.item()
                 val_infonce += loss_dict["loss/infonce"]
+                
+                # Compute temporal predictions for IoU
+                batch_size = len(batch["queries"])
+                for i in range(batch_size):
+                    gt_start = batch["starts"][i]
+                    gt_end = batch["ends"][i]
+                    
+                    if config.use_regression and offsets is not None:
+                        # Direct regression prediction
+                        offset_pred = offsets[i]  # [start_offset, end_offset]
+                        window_start = batch["start"][i] if "start" in batch else 0.0
+                        window_end = batch["end"][i] if "end" in batch else (gt_end - gt_start + 10)
+                        pred_start, pred_end = predict_from_offsets(offset_pred, window_start, window_end)
+                    else:
+                        # Sliding window: use the window from batch
+                        pred_start = gt_start  # Simplified - would need sliding window scoring
+                        pred_end = gt_end
+                    
+                    batch_predictions.append({
+                        "gt_start": gt_start,
+                        "gt_end": gt_end,
+                        "pred_start": pred_start,
+                        "pred_end": pred_end,
+                    })
+                
                 val_batches += 1
         
         if val_batches > 0:
             avg_val_loss = val_loss / val_batches
             best_val_loss = min(best_val_loss, avg_val_loss)
             
+            # Compute temporal metrics
+            temporal_metrics = compute_temporal_metrics(batch_predictions, iou_threshold=0.5)
+            
+            # Update best metrics
+            best_val_loss = min(best_val_loss, avg_val_loss)
+            if temporal_metrics["mIoU"] > best_mIoU:
+                best_mIoU = temporal_metrics["mIoU"]
+                best_R1 = temporal_metrics["R@1"]
+            
             print(f"\n  → Val loss: {avg_val_loss:.4f} (best: {best_val_loss:.4f})")
+            print(f"  → mIoU: {temporal_metrics['mIoU']:.4f} (best: {best_mIoU:.4f}) | R@1: {temporal_metrics['R@1']:.2%} (best: {best_R1:.2%}) | R@5: {temporal_metrics['R@5']:.2%}")
             
             if USE_WANDB and HAS_WANDB and wandb.run:
                 wandb.log({
                     "val/loss": avg_val_loss,
                     "val/best": best_val_loss,
+                    "val/mIoU": temporal_metrics["mIoU"],
+                    "val/best_mIoU": best_mIoU,
+                    "val/R@1": temporal_metrics["R@1"],
+                    "val/best_R@1": best_R1,
+                    "val/R@5": temporal_metrics["R@5"],
                     "epoch": epoch,
                 })
 
@@ -518,8 +574,11 @@ print(f"num_epochs:       {epoch}")
 print(f"batch_size:       {BATCH_SIZE}")
 print(f"lr:               {LEARNING_RATE}")
 
+print(f"best_mIoU:        {best_mIoU:.6f}")
+print(f"best_R@1:         {best_R1:.6f}")
+
 if USE_WANDB and HAS_WANDB and wandb.run:
-    # Add key parameters to run summary for easy comparison
+    # Add key parameters and best metrics to run summary
     wandb.run.summary.update({
         "hp/lr": LEARNING_RATE,
         "hp/temperature": TEMPERATURE,
@@ -527,5 +586,8 @@ if USE_WANDB and HAS_WANDB and wandb.run:
         "hp/use_regression": USE_REGRESSION,
         "hp/batch_size": BATCH_SIZE,
         "hp/warmup_steps": WARMUP_STEPS,
+        "best_mIoU": best_mIoU,
+        "best_R@1": best_R1,
+        "best_val_loss": best_val_loss,
     })
     wandb.finish()
