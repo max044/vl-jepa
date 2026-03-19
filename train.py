@@ -251,14 +251,14 @@ while True:
         # Loss - VLJepa returns sy_hat (predicted) and sy (target)
         sy_hat = outputs["sy_hat"]  # Predicted embeddings [B, D]
         sy = outputs["sy"]  # Target embeddings [B, D]
-        
+
         # For InfoNCE: sy_hat vs sy
         # sy_hat should align with sy (bidirectional)
         loss, loss_dict = vl_jepa_loss(
-            sy_hat, sy_hat, sy,  # Using sy_hat for both x and query as they're combined
+            sy_hat, sy,
             temperature=config.temperature,
-            sigreg=sigreg,
             sigreg_weight=config.sigreg_weight,
+            sigreg_module=sigreg,
         )
         
         # Backward
@@ -351,10 +351,10 @@ while True:
                 sy = outputs["sy"]
                 
                 loss, loss_dict = vl_jepa_loss(
-                    sy_hat, sy_hat, sy,
+                    sy_hat, sy,
                     temperature=config.temperature,
-                    sigreg=sigreg,
                     sigreg_weight=config.sigreg_weight,
+                    sigreg_module=sigreg,
                 )
                 
                 val_loss += loss.item()
@@ -408,12 +408,12 @@ with torch.no_grad():
         sy = outputs["sy"]
         
         loss, loss_dict = vl_jepa_loss(
-            sy_hat, sy_hat, sy,
+            sy_hat, sy,
             temperature=config.temperature,
-            sigreg=sigreg,
             sigreg_weight=config.sigreg_weight,
+            sigreg_module=sigreg,
         )
-        
+
         final_val_loss += loss.item()
         final_val_infonce += loss_dict["infonce"]
         val_batches += 1
