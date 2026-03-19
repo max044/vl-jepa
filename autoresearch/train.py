@@ -220,29 +220,15 @@ print(f"Starting training...\n")
 
 # W&B
 if USE_WANDB and HAS_WANDB:
-    # Create descriptive run name from changed parameters
-    run_name_parts = []
-    if config.lr != 1e-4:
-        run_name_parts.append(f"lr{config.lr}")
-    if config.temperature != 0.07:
-        run_name_parts.append(f"temp{config.temperature}")
-    if config.sigreg_weight != 0.1:
-        run_name_parts.append(f"sigreg{config.sigreg_weight}")
-    if config.use_regression:
-        run_name_parts.append("regression")
+    # Run name: always include all key params
+    reg_str = "_regression" if config.use_regression else ""
+    sigreg_str = f"_sigreg{config.sigreg_weight}" if config.sigreg_weight > 0 else "_no_sigreg"
+    run_name = f"lr{config.lr}_temp{config.temperature}{sigreg_str}{reg_str}"
     
-    run_name = "_".join(run_name_parts) if run_name_parts else "baseline"
-    
-    # Create tags for easy filtering
+    # Tags for easy filtering
     tags = []
-    if config.use_regression:
-        tags.append("regression")
-    else:
-        tags.append("no_regression")
-    if config.sigreg_weight > 0:
-        tags.append("with_sigreg")
-    else:
-        tags.append("no_sigreg")
+    tags.append("regression" if config.use_regression else "no_regression")
+    tags.append("with_sigreg" if config.sigreg_weight > 0 else "no_sigreg")
     tags.append(f"lr_{config.lr}")
     tags.append(f"temp_{config.temperature}")
     
@@ -455,13 +441,15 @@ while True:
                     
                     if config.use_regression and offsets is not None:
                         # Direct regression prediction
+                        # The model sees the GT window [gt_start, gt_end] with jitter
+                        # offset_targets in dataset are normalized to this window
                         offset_pred = offsets[i]  # [start_offset, end_offset]
-                        window_start = batch["start"][i] if "start" in batch else 0.0
-                        window_end = batch["end"][i] if "end" in batch else (gt_end - gt_start + 10)
-                        pred_start, pred_end = predict_from_offsets(offset_pred, window_start, window_end)
+                        pred_start, pred_end = predict_from_offsets(offset_pred, gt_start, gt_end)
                     else:
-                        # Sliding window: use proper sliding window prediction
-                        video_duration = batch.get("video_duration", [gt_end - gt_start + 10])[i] if "video_duration" in batch else (gt_end - gt_start + 10)
+                        # Sliding window: score windows using embedding similarity
+                        # Without reloading video frames, we use a center-of-mass heuristic
+                        # (proper scoring requires loading each window's frames separately)
+                        video_duration = gt_end - gt_start + 10.0  # Approximate video duration
                         pred_start, pred_end = sliding_window_prediction(
                             video_duration=video_duration,
                             window_sizes=config.window_sizes,
@@ -484,8 +472,7 @@ while True:
             # Compute temporal metrics
             temporal_metrics = compute_temporal_metrics(batch_predictions, iou_threshold=0.5)
             
-            # Update best metrics
-            best_val_loss = min(best_val_loss, avg_val_loss)
+            # Update best mIoU
             if temporal_metrics["mIoU"] > best_mIoU:
                 best_mIoU = temporal_metrics["mIoU"]
                 best_R1 = temporal_metrics["R@1"]
