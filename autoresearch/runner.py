@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 AutoResearch Loop - Runs experiments autonomously on cloud instance
+Accumulates best parameters from previous experiments.
 """
 
 import subprocess
@@ -10,30 +11,36 @@ import os
 from datetime import datetime
 
 # Experiment configurations to try
-# Format: (name, param_changes)
-EXPERIMENTS = [
+# Format: (name, param_changes_relative_to_best)
+EXPERIMENT_CONFIGS = [
     # Baseline first
     ("baseline", {}),
     
-    # Learning rate experiments
+    # Learning rate experiments (baseline params + lr change)
     ("lr_3e-4", {"LEARNING_RATE": "3e-4"}),
     ("lr_3e-5", {"LEARNING_RATE": "3e-5"}),
     ("lr_1e-3", {"LEARNING_RATE": "1e-3"}),
     
-    # Temperature experiments
+    # Temperature experiments (using best lr found)
     ("temp_0.1", {"TEMPERATURE": "0.1"}),
     ("temp_0.05", {"TEMPERATURE": "0.05"}),
     ("temp_0.03", {"TEMPERATURE": "0.03"}),
     
-    # SIGReg weight experiments
+    # SIGReg weight experiments (using best lr + temp found)
     ("sigreg_0.05", {"SIGREG_WEIGHT": "0.05"}),
     ("sigreg_0.2", {"SIGREG_WEIGHT": "0.2"}),
     ("sigreg_0.0", {"SIGREG_WEIGHT": "0.0"}),
     
-    # Combined experiments (best params so far)
-    ("combo_1", {"LEARNING_RATE": "3e-4", "TEMPERATURE": "0.1"}),
-    ("combo_2", {"LEARNING_RATE": "1e-4", "TEMPERATURE": "0.05", "SIGREG_WEIGHT": "0.05"}),
+    # Combined experiments (testing interactions)
+    ("combo_best", {"LEARNING_RATE": "3e-4", "TEMPERATURE": "0.1", "SIGREG_WEIGHT": "0.05"}),
 ]
+
+# Default parameters (baseline)
+DEFAULT_PARAMS = {
+    "LEARNING_RATE": "1e-4",
+    "TEMPERATURE": "0.07",
+    "SIGREG_WEIGHT": "0.1",
+}
 
 def read_train_py():
     with open("autoresearch/train.py", "r") as f:
@@ -56,12 +63,15 @@ def apply_params(content, params):
     
     return '\n'.join(new_lines)
 
-def run_experiment(name, params, baseline_loss=None):
+def run_experiment(name, params, best_loss_so_far):
     """Run a single experiment and return results"""
     print(f"\n{'='*60}")
     print(f"Running: {name}")
     print(f"Params: {params}")
     print(f"{'='*60}\n")
+    
+    # Discard unwanted changes first
+    subprocess.run(["git", "checkout", "--", "uv.lock", "autoresearch/runner.py"], check=False)
     
     # Read current train.py
     content = read_train_py()
@@ -72,10 +82,9 @@ def run_experiment(name, params, baseline_loss=None):
     # Write modified train.py
     write_train_py(modified_content)
     
-    # Git commit (only train.py, ignore other changes)
-    subprocess.run(["git", "stash", "-u"], check=False)  # Stash any other changes
+    # Commit the changes
     subprocess.run(["git", "add", "autoresearch/train.py"], check=True)
-    subprocess.run(["git", "commit", "-m", f"exp: {name}"], check=True)
+    subprocess.run(["git", "commit", "-m", f"exp: {name}", "--allow-empty"], check=True)
     
     # Run training
     start_time = time.time()
@@ -134,55 +143,81 @@ def main():
     os.chdir("/root/vl-jepa")
     
     results = []
-    baseline_loss = None
+    best_loss = float('inf')
+    best_params = DEFAULT_PARAMS.copy()  # Start with defaults
     
     print("Starting AutoResearch Loop")
-    print(f"Total experiments: {len(EXPERIMENTS)}")
-    print(f"Estimated time: ~{len(EXPERIMENTS) * 5} minutes\n")
+    print(f"Total experiments: {len(EXPERIMENT_CONFIGS)}")
+    print(f"Default params: {DEFAULT_PARAMS}")
+    print(f"Estimated time: ~{len(EXPERIMENT_CONFIGS) * 5} minutes\n")
     
-    for i, (name, params) in enumerate(EXPERIMENTS):
-        print(f"\n[{i+1}/{len(EXPERIMENTS)}] Experiment: {name}")
+    for i, (name, param_changes) in enumerate(EXPERIMENT_CONFIGS):
+        print(f"\n[{i+1}/{len(EXPERIMENT_CONFIGS)}] Experiment: {name}")
+        
+        # Merge best params with new changes
+        if name == "baseline":
+            # Baseline uses default params
+            experiment_params = DEFAULT_PARAMS.copy()
+        else:
+            # Other experiments start from best params + new changes
+            experiment_params = best_params.copy()
+            experiment_params.update(param_changes)
+        
+        print(f"Using params: {experiment_params}")
+        print(f"(Based on best so far: {best_params})")
         
         # Run experiment
-        result = run_experiment(name, params, baseline_loss)
+        result = run_experiment(name, experiment_params, best_loss)
         results.append(result)
         
         # Update baseline if this is the baseline
         if name == "baseline":
-            baseline_loss = result["val_loss"]
-            print(f"\n✓ Baseline established: {baseline_loss:.6f}")
+            best_loss = result["val_loss"]
+            print(f"\n✓ Baseline established: {best_loss:.6f}")
         
         # Record result
-        status = "keep" if (baseline_loss is None or result["val_loss"] < baseline_loss) else "discard"
-        if name != "baseline" and result["val_loss"] < baseline_loss:
-            print(f"\n✓ NEW BEST! {result['val_loss']:.6f} < {baseline_loss:.6f}")
-            baseline_loss = result["val_loss"]
+        is_improvement = result["val_loss"] < best_loss
+        status = "keep" if is_improvement else "discard"
+        
+        if is_improvement and name != "baseline":
+            print(f"\n✓ NEW BEST! {result['val_loss']:.6f} < {best_loss:.6f}")
+            best_loss = result["val_loss"]
+            # Update best_params with the params that worked
+            best_params.update(param_changes)
+            print(f"✓ Updated best params: {best_params}")
         elif name != "baseline":
-            print(f"\n✗ Worse than baseline: {result['val_loss']:.6f} >= {baseline_loss:.6f}")
-            # Reset
+            print(f"\n✗ Worse than best: {result['val_loss']:.6f} >= {best_loss:.6f}")
+            # Reset to previous best
             subprocess.run(["git", "reset", "--hard", "HEAD~1"], check=True)
         
         # Save to results file
         with open("autoresearch/results.tsv", "a") as f:
-            param_str = ",".join([f"{k}={v}" for k, v in params.items()]) if params else "baseline"
+            param_str = ",".join([f"{k}={v}" for k, v in experiment_params.items()])
             f.write(f"{name}\t{result.get('val_loss', 'N/A')}\t{result.get('peak_vram', 'N/A')}\t{status}\t{param_str}\n")
         
         # Wait before next experiment (except for last one)
-        if i < len(EXPERIMENTS) - 1:
+        if i < len(EXPERIMENT_CONFIGS) - 1:
             print(f"\nWaiting 5 minutes before next experiment...")
+            print(f"Current best: loss={best_loss:.6f}, params={best_params}")
             time.sleep(300)  # 5 minutes
     
     # Summary
     print("\n" + "="*60)
     print("AUTO-RESEARCH COMPLETE")
     print("="*60)
-    print("\nResults summary:")
+    print(f"\nBest configuration found:")
+    print(f"  val_loss: {best_loss:.6f}")
+    print(f"  params: {best_params}")
+    print("\nAll results:")
+    print("-" * 60)
+    print(f"{'Experiment':<20} {'Loss':<12} {'Status':<10} {'Params':<30}")
     print("-" * 60)
     for r in results:
-        print(f"{r['name']:20s} loss={r.get('val_loss', 'N/A'):10s} VRAM={r.get('peak_vram', 'N/A'):8s}")
+        params_str = ",".join([f"{k}={v}" for k, v in r['params'].items()])[:30]
+        status = "✓ BEST" if r['val_loss'] == best_loss else ("keep" if r['val_loss'] < best_loss * 1.1 else "discard")
+        print(f"{r['name']:<20} {r.get('val_loss', 'N/A'):<12.6f} {status:<10} {params_str}")
     print("-" * 60)
-    print(f"\nBest val_loss: {baseline_loss:.6f}")
-    print(f"Results saved to: autoresearch/results.tsv")
+    print(f"\nResults saved to: autoresearch/results.tsv")
 
 if __name__ == "__main__":
     main()
