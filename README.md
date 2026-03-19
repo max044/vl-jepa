@@ -1,128 +1,130 @@
-# 🎥 VL-JEPA: Fast Video-Language Retrieval
+# VL-JEPA: Video-Language Joint Embedding
 
-A streamlined implementation of **Video-Language Joint Embedding Predictive Architecture** (VL-JEPA) for **Temporal Moment Retrieval**.
+Implémentation de VL-JEPA pour **Temporal Moment Retrieval** - trouver un moment précis dans une vidéo à partir d'une description textuelle.
 
-Instead of "describing" videos (generative), this model learns to **align** video segments with text in a shared embedding space. This makes searching through hours of video nearly instantaneous.
+## Architecture
 
----
+- **X-Encoder** (frozen): V-JEPA 2 ViT-L - extraction de features vidéo
+- **Predictor** (trainable): Qwen3.5-0.8B - prédit les embeddings texte
+- **Y-Encoder** (trainable): Qwen3-Embedding-0.6B - encode les captions
 
-## 🧠 Architecture
-- **Vision (X)**: Frozen `V-JEPA 2` (ViT-L).
-- **Text (Y)**: Frozen `MiniLM` (all-MiniLM-L6-v2).
-- **Alignment**: `Qwen 2.5 0.5B` tuned with **LoRA** (predicts text embeddings from video features).
+## Structure du Repository
 
----
-
-## ⚡ Quick Start (Local)
-
-1. **Install** (requires [uv](https://astral.sh/uv)):
-   ```bash
-   git clone https://github.com/max044/vl-jepa.git
-   cd vl-jepa
-   uv sync
-   ```
-
-2. **Prepare Data**:
-   ```bash
-   uv run download_annotations.py
-   # Place your Charades videos in data/Charades_v1_480/
-   ```
-
-3. **Train**:
-   ```bash
-   uv run train.py --device mps # or cuda
-   ```
-
----
-
-## ☁️ Cloud GPU Training (Vast.ai)
-
-### 🚀 Automated Method (Recommended)
-We provide an automated launcher using the **Vast.ai Python SDK**. This script will find the cheapest GPU, launch it, sync your code/.env, bootstrap the environment, and **start training automatically**.
-
-1. **Configure Environment**:
-   ```bash
-   cp .env.example .env
-   # Add your VASTAI_API_KEY, WANDB_API_KEY and HF_TOKEN to .env
-   ```
-
-2. **Launch & Train**:
-   ```bash
-   uv run python scripts/vast_launcher.py --gpu "RTX 4090"
-   ```
-   *The script will automatically start training. You can monitor progress with the provided `tail -f` command or via SSH.*
-
-### 🎛️ Advanced Launcher Options
-The `vast_launcher.py` script is highly flexible. You can use it to run evaluations, sweeps, or just prepare an instance.
-
-- **Run a specific script** (e.g. an evaluation or sweep):
-  ```bash
-  uv run python scripts/vast_launcher.py --script "scripts/sweep.sh"
-  ```
-- **Skip dataset download** (useful if you stream data):
-  ```bash
-  uv run python scripts/vast_launcher.py --no-dataset
-  ```
-- **Prepare instance only** (bootstrap without running any script):
-  ```bash
-  uv run python scripts/vast_launcher.py --no-run
-  ```
-
-### 🛠️ Manual Method (Alternative)
-If you prefer to set up the instance yourself on Vast.ai or RunPod:
-
-1. **Initialize Instance**:
-   Run this on your fresh GPU instance:
-   ```bash
-   curl -sSL https://raw.githubusercontent.com/max044/vl-jepa/main/scripts/bootstrap.sh | bash
-   ```
-
-2. **Configure Environment**:
-   ```bash
-   cp .env.example .env
-   nano .env  # Add WANDB_API_KEY and HF_TOKEN
-   ```
-
-3. **Run Training**:
-   ```bash
-   uv run download_annotations.py
-   bash scripts/train_cloud.sh
-   ```
-
----
-
-## 🧪 Evaluation & Inference
-
-Once training is finished, you can evaluate your model on the test set:
-
-```bash
-# Replace ID with your W&B run ID (e.g. 1a2b3c4d)
-CHECKPOINT="max044/vl-jepa/model-ID:best" bash scripts/eval_cloud.sh
+```
+vl-jepa/
+├── autoresearch/         # Expérimentations rapides (5 min)
+│   ├── train.py         # Script d'entraînement time-budgeted
+│   ├── prepare.py       # Préparation données
+│   └── run.sh           # Lancer une expérience
+├── training/            # Entraînement complet
+│   ├── train.py         # Entraînement complet (20 epochs)
+│   ├── eval.py          # Évaluation
+│   └── download_data.py # Téléchargement données
+├── scripts/             # Scripts cloud
+│   ├── cloud_train.sh   # Lancer entraînement
+│   ├── cloud_eval.sh    # Lancer évaluation
+│   └── setup_instance.sh # Setup instance
+├── vljepa/              # Code source modèle
+│   ├── config.py
+│   ├── models.py
+│   ├── dataset.py
+│   └── losses.py
+├── FILE_MANIFEST.md     # Documentation fichiers
+└── program.md           # Instructions agents
 ```
 
-To run inference on a single video, use:
+## Workflow
+
+### 1. Autoresearch (Trouver les hyperparamètres)
+
+Sur l'instance cloud:
 ```bash
-uv run infer.py --checkpoint path/to/model.pt --video data/test.mp4 --query "person opening door"
+ssh -p <port> root@<ip>
+cd ~/vl-jepa
+
+# Modifier les hyperparams
+nano autoresearch/train.py  # Lignes 35-55
+
+# Commit
+git add autoresearch/train.py
+git commit -m "exp: lr=3e-4, temp=0.1"
+
+# Lancer
+bash autoresearch/run.sh
+
+# Noter résultat
+echo "abc1234	1.05	18.2	keep	lr=3e-4" >> autoresearch/results.tsv
 ```
 
----
+**Si val_loss s'améliore**: garder le commit  
+**Si pas d'amélioration**: `git reset --hard HEAD~1`
 
-## 🔍 How it Works
+### 2. Training Complet (Avec les meilleurs hyperparams)
 
-1. **Training**: The model takes a video segment and its description. It uses **InfoNCE loss** to push the "correct" pairs together in the embedding space.
-2. **Inference**: To find a moment (e.g., *"person opening a door"*):
-    - We slide windows of various sizes (2s, 4s, 8s, 16s) across the video.
-    - We compare each window's embedding to the query embedding.
-    - We return the windows with the highest similarity scores.
+```bash
+# Copier les meilleurs params dans training/
+nano training/train.py  # Modifier lignes 35-55
 
----
+# Lancer
+bash scripts/cloud_train.sh
+```
 
-## 📊 Monitoring
-- **W&B**: Every run logs loss curves, GPU usage, and uploads checkpoints as tagged artifacts (`best`, `latest`).
-- **Early Stopping**: Automated based on `val/loss`.
-- **Metrics**: We use **mIoU** and **Recall@1** to measure how accurately the model finds the ground-truth timestamps.
+Les checkpoints sont sauvegardés dans `checkpoints/` et sur W&B.
 
----
+### 3. Évaluation
 
-## 📄 License
+```bash
+bash scripts/cloud_eval.sh checkpoints/best_e20.pt
+```
+
+## Hyperparamètres clés
+
+Dans `train.py`, modifier:
+- `LEARNING_RATE`: [1e-5, 3e-5, 1e-4, 3e-4, 1e-3]
+- `BATCH_SIZE`: [2, 4, 8]
+- `TEMPERATURE`: [0.03, 0.05, 0.07, 0.1, 0.15]
+- `SIGREG_WEIGHT`: [0.0, 0.05, 0.1, 0.2, 0.5]
+- `WARMUP_STEPS`: [50, 100, 200, 500]
+
+## Commandes essentielles
+
+```bash
+# Setup instance (une fois)
+bash scripts/setup_instance.sh
+
+# Autoresearch
+bash autoresearch/run.sh
+
+# Training
+bash scripts/cloud_train.sh
+
+# Évaluation
+bash scripts/cloud_eval.sh checkpoints/best_e20.pt
+
+# Voir résultats
+grep "val_loss:" autoresearch/run.log
+grep "val_loss:" training/run.log
+```
+
+## Monitoring
+
+- **W&B Training**: https://wandb.ai/maxence-cabiddu-maxence-cabiddu/vl-jepa
+- **W&B Autoresearch**: https://wandb.ai/maxence-cabiddu-maxence-cabiddu/vl-jepa-autoresearch
+
+## Documentation
+
+- `FILE_MANIFEST.md` - Description de chaque fichier
+- `program.md` - Instructions pour agents autonomes
+- `CLAUDE.md` - Contexte technique
+
+## Règles
+
+1. **Autoresearch**: Modifier UNIQUEMENT `autoresearch/train.py`
+2. **Training**: Utiliser les hyperparams trouvés par autoresearch
+3. **Model code**: Ne pas toucher `vljepa/` sauf changement architecture
+4. **Commits**: Un commit = une expérience (pour rollback)
+5. **PAS de git**: `data/`, `checkpoints/`, `.env`, `results.tsv`
+
+## License
+
 MIT
