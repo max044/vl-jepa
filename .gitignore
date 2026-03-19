@@ -19,3 +19,4 @@ checkpoints/*
 wandb/
 artifacts/
 *test_results.md
+results.tsv
