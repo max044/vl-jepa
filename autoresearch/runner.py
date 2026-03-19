@@ -72,7 +72,8 @@ def run_experiment(name, params, baseline_loss=None):
     # Write modified train.py
     write_train_py(modified_content)
     
-    # Git commit
+    # Git commit (only train.py, ignore other changes)
+    subprocess.run(["git", "stash", "-u"], check=False)  # Stash any other changes
     subprocess.run(["git", "add", "autoresearch/train.py"], check=True)
     subprocess.run(["git", "commit", "-m", f"exp: {name}"], check=True)
     
