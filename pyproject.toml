@@ -23,6 +23,7 @@ dependencies = [
     "huggingface-hub>=1.4.1",
     "python-dotenv>=1.2.2",
     "vastai>=0.2.8",
+    "flash-linear-attention>=0.4.2",
 ]
 
 [build-system]

@@ -489,12 +489,47 @@ wheels = [
 ]
 
 [[package]]
+name = "einops"
+version = "0.8.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/77/850bef8d72ffb9219f0b1aac23fbc1bf7d038ee6ea666f331fa273031aa2/einops-0.8.2.tar.gz", hash = "sha256:609da665570e5e265e27283aab09e7f279ade90c4f01bcfca111f3d3e13f2827", size = 56261 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/09/f8d8f8f31e4483c10a906437b4ce31bdf3d6d417b73fe33f1a8b59e34228/einops-0.8.2-py3-none-any.whl", hash = "sha256:54058201ac7087911181bfec4af6091bb59380360f069276601256a76af08193", size = 65638 },
+]
+
+[[package]]
 name = "filelock"
 version = "3.24.3"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/73/92/a8e2479937ff39185d20dd6a851c1a63e55849e447a55e798cc2e1f49c65/filelock-3.24.3.tar.gz", hash = "sha256:011a5644dc937c22699943ebbfc46e969cdde3e171470a6e40b9533e5a72affa", size = 37935 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/0f/5d0c71a1aefeb08efff26272149e07ab922b64f46c63363756224bd6872e/filelock-3.24.3-py3-none-any.whl", hash = "sha256:426e9a4660391f7f8a810d71b0555bce9008b0a1cc342ab1f6947d37639e002d", size = 24331 },
+]
+
+[[package]]
+name = "fla-core"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/53/f9/9e05c48f92b1388a8a357141eb557ed0dd6d4bb936e1d05d35f01976657f/fla_core-0.4.2.tar.gz", hash = "sha256:e9fef6fcdf122029f9feb7dccfeb85eb9650e6aabc72d2a65b36558e9c590edd", size = 377722 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/36/3c303f92bafea7c3f97d68bbb83d18cc42e30cd0bfb1b7cfe589360f11d6/fla_core-0.4.2-py3-none-any.whl", hash = "sha256:cba3db29380002da3cbfc0db94d6efac19aaf528900d19c05c2765e8f3cc485b", size = 510239 },
+]
+
+[[package]]
+name = "flash-linear-attention"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fla-core" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/cb/46cc27a829a10b308927c5dbc99176906a021bb0770253699e93f3cd81a0/flash_linear_attention-0.4.2.tar.gz", hash = "sha256:f97c01ebe7cf390323af07dd3fb65ade07da16724339bf70c78607bc0c007c34", size = 148464 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/ee/a3cba17965482b35c4990af90bad108e82c32edcb59911c37f318b5f4198/flash_linear_attention-0.4.2-py3-none-any.whl", hash = "sha256:c08be006ce4dbe1be81f54938ee8e6fc7968cfba397c8d06c7669e97b8c44c0d", size = 284661 },
 ]
 
 [[package]]
@@ -2855,6 +2890,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "bitsandbytes" },
     { name = "datasets" },
+    { name = "flash-linear-attention" },
     { name = "huggingface-hub" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -2877,6 +2913,7 @@ requires-dist = [
     { name = "accelerate", specifier = ">=0.28.0" },
     { name = "bitsandbytes", specifier = ">=0.43.0" },
     { name = "datasets", specifier = ">=2.16.0" },
+    { name = "flash-linear-attention", specifier = ">=0.4.2" },
     { name = "huggingface-hub", specifier = ">=1.4.1" },
     { name = "numpy", specifier = ">=2.1.0" },
     { name = "opencv-python", specifier = ">=4.8.0" },
