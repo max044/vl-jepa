@@ -45,7 +45,7 @@ class Config:
     epochs: int = 20
     warmup_steps: int = 500
     grad_clip: float = 1.0
-    dtype: str = "fp16"       # FP16 (BF16 not supported on all GPUs)
+    dtype: str = "fp32"       # FP32 for maximum compatibility
 
     # Loss
     temperature: float = 0.07

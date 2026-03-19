@@ -130,8 +130,11 @@ class Predictor(nn.Module):
         super().__init__()
         self.config = config
         
-        if config.device == "cuda":
-            dtype = torch.bfloat16 if config.dtype == "bf16" else torch.float16
+        # Handle dtype selection
+        if config.dtype == "bf16":
+            dtype = torch.bfloat16
+        elif config.dtype == "fp16":
+            dtype = torch.float16
         else:
             dtype = torch.float32
         
@@ -275,8 +278,11 @@ class YEncoder(nn.Module):
         super().__init__()
         self.config = config
         
-        if config.device == "cuda":
-            dtype = torch.bfloat16 if config.dtype == "bf16" else torch.float16
+        # Handle dtype selection
+        if config.dtype == "bf16":
+            dtype = torch.bfloat16
+        elif config.dtype == "fp16":
+            dtype = torch.float16
         else:
             dtype = torch.float32
         
