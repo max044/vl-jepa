@@ -143,8 +143,15 @@ class Predictor(nn.Module):
             trust_remote_code=True
         )
         
-        hidden_size = getattr(model_config, 'hidden_size', 896)
-        num_hidden_layers = getattr(model_config, 'num_hidden_layers', 24)
+        # Handle different config structures (Qwen2 vs Qwen3.5)
+        if hasattr(model_config, 'text_config'):
+            # Qwen3.5 style config
+            hidden_size = getattr(model_config.text_config, 'hidden_size', 1024)
+            num_hidden_layers = getattr(model_config.text_config, 'num_hidden_layers', 24)
+        else:
+            # Qwen2 style config
+            hidden_size = getattr(model_config, 'hidden_size', 896)
+            num_hidden_layers = getattr(model_config, 'num_hidden_layers', 24)
         
         num_layers = config.predictor_layers if config.predictor_layers > 0 else num_hidden_layers
         start_layer = num_hidden_layers - num_layers if config.predictor_layers > 0 else 0
