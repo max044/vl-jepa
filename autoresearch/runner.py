@@ -11,17 +11,9 @@ import os
 from datetime import datetime
 
 # Experiment configurations to try
-# Final comparison: 4 combinations of (Regression × SIGReg)
+# Remaining 3 experiments (baseline_sigreg already done: 0.868623)
 EXPERIMENT_CONFIGS = [
-    # 1. No regression + With SIGReg (baseline optimized)
-    ("baseline_sigreg", {
-        "LEARNING_RATE": "3e-4",
-        "TEMPERATURE": "0.03",
-        "SIGREG_WEIGHT": "0.05",
-        "USE_REGRESSION": "False"
-    }),
-    
-    # 2. No regression + No SIGReg
+    # 1. No regression + No SIGReg
     ("baseline_no_sigreg", {
         "LEARNING_RATE": "3e-4",
         "TEMPERATURE": "0.03",
@@ -29,7 +21,7 @@ EXPERIMENT_CONFIGS = [
         "USE_REGRESSION": "False"
     }),
     
-    # 3. With regression + With SIGReg
+    # 2. With regression + With SIGReg
     ("regression_sigreg", {
         "LEARNING_RATE": "3e-4",
         "TEMPERATURE": "0.03",
@@ -38,7 +30,7 @@ EXPERIMENT_CONFIGS = [
         "REGRESSION_WEIGHT": "1.0"
     }),
     
-    # 4. With regression + No SIGReg
+    # 3. With regression + No SIGReg
     ("regression_no_sigreg", {
         "LEARNING_RATE": "3e-4",
         "TEMPERATURE": "0.03",
