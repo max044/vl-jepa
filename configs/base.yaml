@@ -47,7 +47,7 @@ val_split: 0.1
 checkpoint_dir: "./checkpoints"
 save_every: 2
 val_every: 2
-val_samples: 500
+val_samples: 100
 early_stopping_patience: 5
 
 # Inference
