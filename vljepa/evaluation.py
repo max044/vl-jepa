@@ -123,3 +123,46 @@ def predict_from_offsets(
         pred_end = pred_start + 1.0
     
     return pred_start, pred_end
+
+
+def sliding_window_prediction(
+    video_duration: float,
+    window_sizes: List[float] = [2.0, 4.0, 8.0, 16.0],
+    window_stride: float = 1.0,
+    score_fn = None,
+) -> Tuple[float, float]:
+    """Generate sliding window proposals and return best prediction.
+    
+    Args:
+        video_duration: Total video duration in seconds
+        window_sizes: List of window sizes to try
+        window_stride: Stride between consecutive windows
+        score_fn: Function to score a window (start, end) -> float. 
+                 If None, returns center window.
+        
+    Returns:
+        (pred_start, pred_end) for best window
+    """
+    if score_fn is None:
+        # Default: return center window of medium size
+        window_size = window_sizes[len(window_sizes) // 2]
+        pred_start = (video_duration - window_size) / 2
+        pred_end = pred_start + window_size
+        return pred_start, pred_end
+    
+    # Score all windows
+    proposals = []
+    for window_size in window_sizes:
+        num_windows = int((video_duration - window_size) / window_stride) + 1
+        for i in range(num_windows):
+            start = i * window_stride
+            end = start + window_size
+            score = score_fn(start, end)
+            proposals.append((start, end, score))
+    
+    # Return best window
+    if not proposals:
+        return 0.0, video_duration
+    
+    best = max(proposals, key=lambda x: x[2])
+    return best[0], best[1]

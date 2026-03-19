@@ -33,7 +33,7 @@ from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
 from vljepa.losses import vl_jepa_loss, SIGReg
-from vljepa.evaluation import compute_temporal_metrics, compute_iou, predict_from_offsets
+from vljepa.evaluation import compute_temporal_metrics, compute_iou, predict_from_offsets, sliding_window_prediction
 
 from prepare import TIME_BUDGET, DATA_DIR
 
@@ -460,11 +460,13 @@ while True:
                         window_end = batch["end"][i] if "end" in batch else (gt_end - gt_start + 10)
                         pred_start, pred_end = predict_from_offsets(offset_pred, window_start, window_end)
                     else:
-                        # Sliding window: simple heuristic prediction (center of video with fixed duration)
+                        # Sliding window: use proper sliding window prediction
                         video_duration = batch.get("video_duration", [gt_end - gt_start + 10])[i] if "video_duration" in batch else (gt_end - gt_start + 10)
-                        pred_duration = (gt_end - gt_start) * 1.2  # Slightly longer than GT
-                        pred_start = video_duration * 0.4  # Start at 40% of video
-                        pred_end = pred_start + pred_duration
+                        pred_start, pred_end = sliding_window_prediction(
+                            video_duration=video_duration,
+                            window_sizes=config.window_sizes,
+                            window_stride=config.window_stride,
+                        )
                     
                     batch_predictions.append({
                         "gt_start": gt_start,
