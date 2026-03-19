@@ -20,7 +20,7 @@ class Config:
     # Using Qwen3.5-0.8B as it's newer and closer to Llama-3.2-1B in size
     predictor_model: str = "Qwen/Qwen3.5-0.8B"
     use_lora: bool = False  # No LoRA - full fine-tune as per paper
-    predictor_layers: int = 8  # Last 8 layers as per paper (Section 3.1)
+    predictor_layers: int = 0  # 0 = use all layers (8 = last 8 layers, not working yet)
     use_bidirectional_attention: bool = True  # Disable causal mask as per paper
 
     # Y-Encoder: Qwen3-Embedding-0.6B (trainable) - better than EmbeddingGemma per ablation
