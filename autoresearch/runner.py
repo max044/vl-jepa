@@ -11,34 +11,38 @@ import os
 from datetime import datetime
 
 # Experiment configurations to try
-# Format: (name, param_changes_relative_to_best)
+# Final comparison: 4 combinations of (Regression × SIGReg)
 EXPERIMENT_CONFIGS = [
-    # Baseline first
-    ("baseline", {}),
-    
-    # Learning rate experiments (baseline params + lr change)
-    ("lr_3e-4", {"LEARNING_RATE": "3e-4"}),
-    ("lr_3e-5", {"LEARNING_RATE": "3e-5"}),
-    ("lr_1e-3", {"LEARNING_RATE": "1e-3"}),
-    
-    # Temperature experiments (using best lr found)
-    ("temp_0.1", {"TEMPERATURE": "0.1"}),
-    ("temp_0.05", {"TEMPERATURE": "0.05"}),
-    ("temp_0.03", {"TEMPERATURE": "0.03"}),
-    
-    # SIGReg weight experiments (using best lr + temp found)
-    ("sigreg_0.05", {"SIGREG_WEIGHT": "0.05"}),
-    ("sigreg_0.2", {"SIGREG_WEIGHT": "0.2"}),
-    ("sigreg_0.0", {"SIGREG_WEIGHT": "0.0"}),
-    
-    # Combined experiments (testing interactions)
-    ("combo_best", {"LEARNING_RATE": "3e-4", "TEMPERATURE": "0.03", "SIGREG_WEIGHT": "0.05"}),
-    
-    # Architecture experiments (using best hyperparams found)
-    ("regression_direct", {
+    # 1. No regression + With SIGReg (baseline optimized)
+    ("baseline_sigreg", {
         "LEARNING_RATE": "3e-4",
-        "TEMPERATURE": "0.03", 
+        "TEMPERATURE": "0.03",
         "SIGREG_WEIGHT": "0.05",
+        "USE_REGRESSION": "False"
+    }),
+    
+    # 2. No regression + No SIGReg
+    ("baseline_no_sigreg", {
+        "LEARNING_RATE": "3e-4",
+        "TEMPERATURE": "0.03",
+        "SIGREG_WEIGHT": "0.0",
+        "USE_REGRESSION": "False"
+    }),
+    
+    # 3. With regression + With SIGReg
+    ("regression_sigreg", {
+        "LEARNING_RATE": "3e-4",
+        "TEMPERATURE": "0.03",
+        "SIGREG_WEIGHT": "0.05",
+        "USE_REGRESSION": "True",
+        "REGRESSION_WEIGHT": "1.0"
+    }),
+    
+    # 4. With regression + No SIGReg
+    ("regression_no_sigreg", {
+        "LEARNING_RATE": "3e-4",
+        "TEMPERATURE": "0.03",
+        "SIGREG_WEIGHT": "0.0",
         "USE_REGRESSION": "True",
         "REGRESSION_WEIGHT": "1.0"
     }),
@@ -160,44 +164,27 @@ def main():
     print(f"Default params: {DEFAULT_PARAMS}")
     print(f"Estimated time: ~{len(EXPERIMENT_CONFIGS) * 5} minutes\n")
     
-    for i, (name, param_changes) in enumerate(EXPERIMENT_CONFIGS):
+    for i, (name, experiment_params) in enumerate(EXPERIMENT_CONFIGS):
         print(f"\n[{i+1}/{len(EXPERIMENT_CONFIGS)}] Experiment: {name}")
         
-        # Merge best params with new changes
-        if name == "baseline":
-            # Baseline uses default params
-            experiment_params = DEFAULT_PARAMS.copy()
-        else:
-            # Other experiments start from best params + new changes
-            experiment_params = best_params.copy()
-            experiment_params.update(param_changes)
-        
         print(f"Using params: {experiment_params}")
-        print(f"(Based on best so far: {best_params})")
         
         # Run experiment
         result = run_experiment(name, experiment_params, best_loss)
         results.append(result)
         
-        # Update baseline if this is the baseline
-        if name == "baseline":
-            best_loss = result["val_loss"]
-            print(f"\n✓ Baseline established: {best_loss:.6f}")
-        
         # Record result
         is_improvement = result["val_loss"] < best_loss
         status = "keep" if is_improvement else "discard"
         
-        if is_improvement and name != "baseline":
+        if is_improvement:
             print(f"\n✓ NEW BEST! {result['val_loss']:.6f} < {best_loss:.6f}")
             best_loss = result["val_loss"]
             # Update best_params with the params that worked
-            best_params.update(param_changes)
+            best_params = experiment_params.copy()
             print(f"✓ Updated best params: {best_params}")
-        elif name != "baseline":
-            print(f"\n✗ Worse than best: {result['val_loss']:.6f} >= {best_loss:.6f}")
-            # Reset to previous best
-            subprocess.run(["git", "reset", "--hard", "HEAD~1"], check=True)
+        else:
+            print(f"\n✗ Not best: {result['val_loss']:.6f} >= {best_loss:.6f}")
         
         # Save to results file
         with open("autoresearch/results.tsv", "a") as f:
@@ -207,7 +194,6 @@ def main():
         # Wait before next experiment (except for last one)
         if i < len(EXPERIMENT_CONFIGS) - 1:
             print(f"\nWaiting 5 minutes before next experiment...")
-            print(f"Current best: loss={best_loss:.6f}, params={best_params}")
             time.sleep(300)  # 5 minutes
     
     # Summary
