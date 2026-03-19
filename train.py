@@ -245,7 +245,7 @@ while True:
             pixel_values,
             query_tokens["input_ids"],
             query_tokens["attention_mask"],
-            batch["texts"],
+            batch["captions"],
         )
         
         # Loss
@@ -343,7 +343,7 @@ while True:
                     pixel_values,
                     query_tokens["input_ids"],
                     query_tokens["attention_mask"],
-                    batch["texts"],
+                    batch["captions"],
                 )
                 
                 x_embeds = outputs["x_embeds"]
@@ -401,7 +401,7 @@ with torch.no_grad():
             pixel_values,
             query_tokens["input_ids"],
             query_tokens["attention_mask"],
-            batch["texts"],
+            batch["captions"],
         )
         
         x_embeds = outputs["x_embeds"]
