@@ -29,6 +29,7 @@ Objectif : Trouver rapidement les meilleurs hyperparamètres via des expérience
 | `train.py` | Script d'entraînement time-budgeted (5 min) | **Modifier uniquement celui-ci** pour expérimenter |
 | `prepare.py` | Prépare UN SOUS-ENSEMBLE de données (500 vidéos max) pour expériences rapides | Exécuter une fois : `uv run prepare.py --subset 500` |
 | `run.sh` | Lance une expérience simple | `bash autoresearch/run.sh` |
+| `program.md` | **Instructions pour les agents IA** - Comment faire les expériences | Lire par l'agent au démarrage |
 
 **Note sur les données:**
 - `prepare.py` télécharge seulement 500 vidéos (~800MB) pour aller vite
