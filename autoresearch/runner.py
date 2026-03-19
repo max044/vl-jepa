@@ -191,10 +191,7 @@ def main():
             param_str = ",".join([f"{k}={v}" for k, v in experiment_params.items()])
             f.write(f"{name}\t{result.get('val_loss', 'N/A')}\t{result.get('peak_vram', 'N/A')}\t{status}\t{param_str}\n")
         
-        # Wait before next experiment (except for last one)
-        if i < len(EXPERIMENT_CONFIGS) - 1:
-            print(f"\nWaiting 5 minutes before next experiment...")
-            time.sleep(300)  # 5 minutes
+        # Next experiment starts immediately (no wait needed, each run has its own 5min budget)
     
     # Summary
     print("\n" + "="*60)
