@@ -98,10 +98,10 @@ print(f"Config: {asdict(config)}")
 # ---------------------------------------------------------------------------
 
 train_dataset = CharadesSTADataset(
+    anno_file=str(DATA_DIR / "charades_sta_train.txt"),
+    videos_dir=str(DATA_DIR / "Charades_v1_480"),
+    config=config,
     split="train",
-    data_dir=str(DATA_DIR),
-    num_frames=config.num_frames,
-    frame_size=config.frame_size,
 )
 
 # Limit to subset for autoresearch speed
