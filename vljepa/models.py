@@ -151,30 +151,28 @@ class Predictor(nn.Module):
         
         print(f"  Predictor: using layers {start_layer}-{num_hidden_layers-1} ({num_layers} layers)")
         
-        # Get layers - handle different model structures
-        if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
-            layers = self.model.model.layers
-            embed_tokens = self.model.model.embed_tokens
-            rotary_emb = self.model.model.rotary_emb
-            norm = self.model.model.norm
-        elif hasattr(self.model, 'layers'):
-            layers = self.model.layers
-            embed_tokens = self.model.embed_tokens
-            rotary_emb = self.model.rotary_emb
-            norm = self.model.norm
-        else:
-            raise ValueError(f"Cannot find layers in model type: {type(self.model)}")
-        
         if config.predictor_layers > 0:
+            # Get layers - handle different model structures for partial layers
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+                layers = self.model.model.layers
+                embed_tokens = self.model.model.embed_tokens
+                norm = self.model.model.norm
+            elif hasattr(self.model, 'layers'):
+                layers = self.model.layers
+                embed_tokens = self.model.embed_tokens
+                norm = self.model.norm
+            else:
+                raise ValueError(f"Cannot find layers in model type: {type(self.model)}")
+            
             self.transformer_layers = nn.ModuleList(list(layers)[start_layer:])
             self.norm = norm
             self.using_partial_layers = True
+            self.embed_tokens = embed_tokens
         else:
+            # Use full model - don't need to extract layers
             self.transformer_layers = None
             self.using_partial_layers = False
-        
-        self.embed_tokens = embed_tokens
-        self.rotary_emb = rotary_emb
+            self.norm = None
         
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -210,7 +208,11 @@ class Predictor(nn.Module):
         
         sv_embeds = self.visual_proj(sv).unsqueeze(1)
         
-        inputs_embeds = self.embed_tokens(input_ids)
+        # Get input embeddings
+        if hasattr(self, 'embed_tokens') and self.embed_tokens is not None:
+            inputs_embeds = self.embed_tokens(input_ids)
+        else:
+            inputs_embeds = self.model.get_input_embeddings()(input_ids)
         
         combined_embeds = torch.cat([sv_embeds, inputs_embeds], dim=1)
         
