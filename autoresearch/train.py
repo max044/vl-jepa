@@ -35,6 +35,11 @@ from vljepa.losses import vl_jepa_loss, SIGReg
 
 from prepare import TIME_BUDGET, DATA_DIR
 
+# Fix data path when running from autoresearch/ directory
+import os
+if os.path.basename(os.getcwd()) == "autoresearch":
+    DATA_DIR = Path("../data/autoresearch")
+
 # ---------------------------------------------------------------------------
 # Hyperparameters (edit these directly, no CLI flags needed)
 # ---------------------------------------------------------------------------
