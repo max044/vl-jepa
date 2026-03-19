@@ -282,6 +282,16 @@ while True:
             optimizer.step()
             optimizer.zero_grad()
             step += 1
+            
+            # Log training metrics to W&B
+            if USE_WANDB and HAS_WANDB and wandb.run and step % 10 == 0:
+                wandb.log({
+                    "train/loss": train_loss,
+                    "train/infonce": loss_dict["loss/infonce"],
+                    "train/sigreg": loss_dict.get("loss/sigreg", 0),
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "step": step,
+                })
         
         # Track loss
         train_loss = loss.item() * config.grad_accumulation
