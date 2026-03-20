@@ -251,6 +251,7 @@ total_training_time = 0
 step = 0
 epoch = 0
 smooth_train_loss = 0
+time_budget_reached = False
 
 while True:
     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -347,12 +348,13 @@ while True:
               f"batch: {batch_idx+1}/{len(train_loader)} | "
               f"remaining: {remaining:.0f}s    ", end="", flush=True)
         
-        # Check time limit every 10 batches
-        if batch_idx % 10 == 0:
+        # Check time limit every 10 batches (but not on first batch)
+        if batch_idx > 0 and batch_idx % 10 == 0:
             torch.cuda.synchronize() if torch.cuda.is_available() else None
             elapsed = time.time() - t_start_training
             if step > 10 and elapsed >= TIME_BUDGET:
                 print("\n⏰ Time budget reached. Stopping...")
+                time_budget_reached = True
                 break
     
     # End of epoch timing
@@ -365,7 +367,11 @@ while True:
     
     epoch += 1
     
-    # Check time budget
+    # Exit main loop if time budget reached
+    if time_budget_reached:
+        break
+    
+    # Check time budget (backup check)
     if step > 10 and total_training_time >= TIME_BUDGET:
         break
     
