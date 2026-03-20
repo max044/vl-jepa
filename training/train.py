@@ -41,14 +41,15 @@ DATA_DIR = Path("data")
 # Ces paramètres viennent des expériences autoresearch
 # ---------------------------------------------------------------------------
 
-# Training - PARAMÈTRES OPTIMISÉS (AutoResearch 2026-03-19)
-BATCH_SIZE = 4  # Augmenté (VRAM disponible: 48GB)
-GRAD_ACCUMULATION = 2  # Effective batch = 8
+# Training - PARAMÈTRES OPTIMISÉS (AutoResearch 2026-03-20)
+BATCH_SIZE = 2  # Optimal (avec grad_accum=2, effective batch=4)
+GRAD_ACCUMULATION = 2  # Effective batch = 4
 LEARNING_RATE = 3e-4  # Optimal trouvé
 WARMUP_STEPS = 100  # Optimal trouvé
 WEIGHT_DECAY = 0.05  # Optimal trouvé
 MAX_EPOCHS = 20  # Entraînement complet
-PATIENCE = 3  # Early stopping: arrêt si pas d'amélioration pendant N époques
+PATIENCE = 5  # Early stopping: arrêt si pas d'amélioration pendant N époques
+VAL_FREQUENCY = 1  # Valider à chaque époque
 
 # Loss
 TEMPERATURE = 0.025  # Optimal trouvé
@@ -329,11 +330,115 @@ for epoch in range(MAX_EPOCHS):
         
         # Progress bar
         pct_done = 100 * (epoch + 1) / MAX_EPOCHS
+        batch_pct = 100 * (batch_idx + 1) / len(train_loader)
         
         print(f"\rstep {step:04d} ({pct_done:.1f}%) | "
               f"loss: {debiased_loss:.4f} | "
               f"epoch: {epoch+1}/{MAX_EPOCHS} | "
               f"batch: {batch_idx+1}/{len(train_loader)}    ", end="", flush=True)
+        
+        # Validation intermédiaire tous les VAL_FREQUENCY % de l'époque
+        val_checkpoints = [VAL_FREQUENCY * (i+1) for i in range(int(1/VAL_FREQUENCY))]
+        for val_pct in val_checkpoints:
+            if batch_idx == int(len(train_loader) * val_pct) - 1:
+                print(f"\n\n📊 Validation à {int(val_pct*100)}% de l'époque {epoch+1}...")
+                
+                model.eval()
+                val_loss = 0.0
+                val_infonce = 0.0
+                val_batches = 0
+                
+                with torch.no_grad():
+                    for batch in val_loader:
+                        if batch is None:
+                            continue
+                        
+                        pixel_values = model.x_encoder.preprocess_frames(
+                            batch["frames"], device=device
+                        )
+                        query_tokens = model.query_encoder.tokenize(
+                            batch["queries"], device=device
+                        )
+                        
+                        outputs = model(
+                            pixel_values,
+                            query_tokens["input_ids"],
+                            query_tokens["attention_mask"],
+                            batch["captions"],
+                        )
+                        
+                        sy_hat = outputs["sy_hat"]
+                        sy = outputs["sy"]
+                        
+                        loss, loss_dict = vl_jepa_loss(
+                            sy_hat, sy,
+                            temperature=config.temperature,
+                            sigreg_weight=config.sigreg_weight,
+                            sigreg_module=sigreg,
+                        )
+                        
+                        val_loss += loss.item()
+                        val_infonce += loss_dict["loss/infonce"]
+                        val_batches += 1
+                
+                if val_batches > 0:
+                    avg_val_loss = val_loss / val_batches
+                    
+                    print(f"  → Val loss: {avg_val_loss:.4f} (best: {best_val_loss:.4f})")
+                    
+                    if USE_WANDB and HAS_WANDB and wandb.run:
+                        wandb.log({
+                            "val/loss": avg_val_loss,
+                            "val/best": best_val_loss,
+                            "epoch": epoch + 1 + val_pct,
+                        })
+                    
+                    # Check if improved
+                    if avg_val_loss < best_val_loss:
+                        best_val_loss = avg_val_loss
+                        best_epoch = epoch + 1
+                        epochs_no_improve = 0
+                        
+                        # Save best checkpoint
+                        checkpoint_dir = Path("checkpoints")
+                        checkpoint_dir.mkdir(exist_ok=True)
+                        checkpoint_path = checkpoint_dir / "best.pt"
+                        torch.save({
+                            'epoch': epoch + 1,
+                            'step': step,
+                            'model_state_dict': model.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'val_loss': avg_val_loss,
+                            'best_val_loss': best_val_loss,
+                            'config': asdict(config),
+                        }, checkpoint_path)
+                        
+                        print(f"  💾 Saved best checkpoint: epoch {epoch+1}@{int(val_pct*100)}% (val_loss: {avg_val_loss:.4f})")
+                        
+                        if USE_WANDB and HAS_WANDB and wandb.run:
+                            wandb.save(str(checkpoint_path))
+                            wandb.run.summary["best_epoch"] = epoch + 1
+                            wandb.run.summary["best_val_loss"] = best_val_loss
+                    else:
+                        epochs_no_improve += 1
+                        print(f"  ⚠️  No improvement for {epochs_no_improve}/{PATIENCE} epochs")
+                        
+                        # Early stopping check
+                        if epochs_no_improve >= PATIENCE:
+                            print(f"\n🛑 Early stopping triggered! Best epoch: {best_epoch} (val_loss: {best_val_loss:.4f})")
+                            # Set flag to break outer loop
+                            early_stop = True
+                
+                model.train()
+                model.predictor.train()
+                model.y_encoder.projection.train()
+                break
+        
+        if 'early_stop' in locals() and early_stop:
+            break
+    
+    if 'early_stop' in locals() and early_stop:
+        break
     
     # End of epoch timing
     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -341,8 +446,8 @@ for epoch in range(MAX_EPOCHS):
     dt = t1 - t0
     total_training_time += dt
     
-    # Validation every epoch
-    if epoch % 1 == 0:  # Validate every epoch
+    # Validation finale à la fin de l'époque (si pas déjà fait à 100%)
+    if VAL_FREQUENCY < 1.0:
         model.eval()
         val_loss = 0.0
         val_infonce = 0.0
