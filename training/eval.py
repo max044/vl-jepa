@@ -126,11 +126,20 @@ def main():
 
     print(f"📂 Loading weights from: {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
-    model.predictor.load_state_dict(ckpt["predictor_state_dict"])
-    model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
     
-    if "logit_scale" in ckpt and hasattr(model, "logit_scale"):
-        model.logit_scale.data.copy_(ckpt["logit_scale"])
+    # Handle different checkpoint formats
+    if "model_state_dict" in ckpt:
+        # Full model state dict format (from training/train.py)
+        model.load_state_dict(ckpt["model_state_dict"])
+        print(f"  ✓ Loaded full model state (best val_loss: {ckpt.get('best_val_loss', 'N/A')})")
+    elif "predictor_state_dict" in ckpt:
+        # Component-specific format
+        model.predictor.load_state_dict(ckpt["predictor_state_dict"])
+        model.y_encoder.projection.load_state_dict(ckpt["y_projection_state_dict"])
+        print("  ✓ Loaded predictor and y_encoder projection")
+    else:
+        print("❌ Unknown checkpoint format")
+        return
     
     model.eval()
 
