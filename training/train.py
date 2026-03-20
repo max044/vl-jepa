@@ -313,13 +313,14 @@ for epoch in range(MAX_EPOCHS):
         epoch_infonce += loss_dict["loss/infonce"]
         num_batches += 1
         
-        # Log to W&B every 10 steps
-        if USE_WANDB and HAS_WANDB and wandb.run and step % 10 == 0:
+        # Log to W&B every 100 steps (~0.1% of training)
+        if USE_WANDB and HAS_WANDB and wandb.run and (step % 100 == 0 or step < 5):
             wandb.log({
                 "train/loss": train_loss,
                 "train/infonce": loss_dict["loss/infonce"],
                 "train/sigreg": loss_dict.get("loss/sigreg", 0),
                 "train/lr": optimizer.param_groups[0]["lr"],
+                "train/epoch": epoch + batch_idx / len(train_loader),
                 "step": step,
             })
         
