@@ -49,7 +49,7 @@ WARMUP_STEPS = 100  # Optimal trouvé
 WEIGHT_DECAY = 0.05  # Optimal trouvé
 MAX_EPOCHS = 20  # Entraînement complet
 PATIENCE = 5  # Early stopping: arrêt si pas d'amélioration pendant N époques
-VAL_FREQUENCY = 1  # Valider à chaque époque
+VAL_FREQUENCY = 0.25  # Valider à 25%, 50%, 75%, 100% de chaque époque
 
 # Loss
 TEMPERATURE = 0.025  # Optimal trouvé
