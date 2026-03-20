@@ -63,7 +63,7 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
         print(f"✓ Dataset: {len(subset)} samples, {len(loader)} batches")
         
         # Warm-up
-        sigreg = SIGReg(embed_dim=config.embed_dim).to(device)
+        sigreg = SIGReg(knots=17).to(device)
         optimizer = torch.optim.AdamW([
             {"params": model.predictor.parameters(), "lr": lr},
             {"params": model.y_encoder.projection.parameters(), "lr": lr * 0.05},
