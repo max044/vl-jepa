@@ -96,7 +96,7 @@ def main():
         else:
             wandb.init(project=args.wandb_project, config=config.__dict__, job_type="eval", tags=["eval"])
 
-    # Load model & move to device
+    # Load model & move to device (keep fp32 for compatibility)
     model = VLJepa(config).to(config.device)
     
     checkpoint_path = args.checkpoint
@@ -138,11 +138,6 @@ def main():
     else:
         print("❌ Unknown checkpoint format")
         return
-    
-    # Convert to half precision after loading weights
-    if config.device == "cuda":
-        model = model.half()
-        print("  ✓ Converted to half precision for speedup")
     
     model.eval()
 
