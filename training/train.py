@@ -48,6 +48,7 @@ LEARNING_RATE = 3e-4  # Optimal trouvé
 WARMUP_STEPS = 100  # Optimal trouvé
 WEIGHT_DECAY = 0.05  # Optimal trouvé
 MAX_EPOCHS = 20  # Entraînement complet
+PATIENCE = 3  # Early stopping: arrêt si pas d'amélioration pendant N époques
 
 # Loss
 TEMPERATURE = 0.025  # Optimal trouvé
@@ -235,10 +236,14 @@ if USE_WANDB and HAS_WANDB:
 
 t_start_training = time.time()
 best_val_loss = float('inf')
+best_epoch = 0
+epochs_no_improve = 0
 total_training_time = 0
 step = 0
 epoch = 0
 smooth_train_loss = 0
+
+print(f"\nTraining with early stopping (patience={PATIENCE})")
 
 for epoch in range(MAX_EPOCHS):
     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -378,7 +383,6 @@ for epoch in range(MAX_EPOCHS):
         
         if val_batches > 0:
             avg_val_loss = val_loss / val_batches
-            best_val_loss = min(best_val_loss, avg_val_loss)
             
             print(f"\n  → Val loss: {avg_val_loss:.4f} (best: {best_val_loss:.4f})")
             
@@ -389,12 +393,15 @@ for epoch in range(MAX_EPOCHS):
                     "epoch": epoch + 1,
                 })
             
-            # Save checkpoint if best (overwrite previous best)
-            if avg_val_loss <= best_val_loss:
+            # Check if improved
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_epoch = epoch + 1
+                epochs_no_improve = 0
+                
+                # Save best checkpoint
                 checkpoint_dir = Path("checkpoints")
                 checkpoint_dir.mkdir(exist_ok=True)
-                
-                # Save only best checkpoint (overwrite)
                 checkpoint_path = checkpoint_dir / "best.pt"
                 torch.save({
                     'epoch': epoch + 1,
@@ -406,15 +413,22 @@ for epoch in range(MAX_EPOCHS):
                     'config': asdict(config),
                 }, checkpoint_path)
                 
-                print(f"  💾 Saved best checkpoint: {checkpoint_path} (val_loss: {avg_val_loss:.4f})")
+                print(f"  💾 Saved best checkpoint: epoch {epoch+1} (val_loss: {avg_val_loss:.4f})")
                 
-                # Save to W&B
                 if USE_WANDB and HAS_WANDB and wandb.run:
                     wandb.save(str(checkpoint_path))
                     wandb.run.summary["best_epoch"] = epoch + 1
                     wandb.run.summary["best_val_loss"] = best_val_loss
+            else:
+                epochs_no_improve += 1
+                print(f"  ⚠️  No improvement for {epochs_no_improve}/{PATIENCE} epochs")
+                
+                # Early stopping check
+                if epochs_no_improve >= PATIENCE:
+                    print(f"\n🛑 Early stopping triggered! Best epoch: {best_epoch} (val_loss: {best_val_loss:.4f})")
+                    break
             
-            # Always save last checkpoint (overwrite)
+            # Always save last checkpoint
             checkpoint_dir = Path("checkpoints")
             checkpoint_dir.mkdir(exist_ok=True)
             last_checkpoint_path = checkpoint_dir / "last.pt"
@@ -484,6 +498,19 @@ if val_batches > 0:
         })
 
 best_val_loss = min(best_val_loss, final_val_loss)
+
+# ---------------------------------------------------------------------------
+# Load best checkpoint for final test evaluation
+# ---------------------------------------------------------------------------
+
+print(f"\n📂 Loading best checkpoint from epoch {best_epoch} for test evaluation...")
+checkpoint_path = Path("checkpoints") / "best.pt"
+if checkpoint_path.exists():
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"  ✓ Loaded best model (val_loss: {checkpoint['best_val_loss']:.4f})")
+else:
+    print(f"  ⚠️  Best checkpoint not found, using current model")
 
 # ---------------------------------------------------------------------------
 # Final evaluation - Test Set (held-out)
