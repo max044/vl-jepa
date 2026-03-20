@@ -49,16 +49,16 @@ if os.path.basename(os.getcwd()) == "autoresearch":
 # Hyperparameters (BEST found so far - edit for experiments)
 # ---------------------------------------------------------------------------
 
-# Training
+# Training - BEST PARAMS from autoresearch
 BATCH_SIZE = 2
 GRAD_ACCUMULATION = 2  # Effective batch = 4
 LEARNING_RATE = 3e-4    # BEST: 3e-4
-WARMUP_STEPS = 100
-WEIGHT_DECAY = 0.05
+WARMUP_STEPS = 100      # BEST: 100
+WEIGHT_DECAY = 0.05     # BEST: 0.05
 
 # Loss
-TEMPERATURE = 0.03       # BEST: 0.03
-SIGREG_WEIGHT = 0.05     # Fixed, always enabled
+TEMPERATURE = 0.025     # BEST: 0.025
+SIGREG_WEIGHT = 0.05    # Fixed, always enabled
 
 # Model
 PREDICTOR_LAYERS = 0  # 0 = use all layers
