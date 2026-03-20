@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Autoresearch GPU-Optimisé
-3 essais × 100 steps avec logging complet sur W&B
+3 essais × 100 steps avec train + val + W&B
 """
 
 import json
@@ -27,8 +27,50 @@ EXPERIMENTS = [
     (16, 1, 5e-4, "bf16", 16, "bf16_b16_w16"),
 ]
 
+def validate(model, val_loader, sigreg, device, dtype):
+    """Validation sur 100 samples"""
+    model.eval()
+    val_loss = 0
+    val_infonce = 0
+    val_batches = 0
+    
+    with torch.no_grad():
+        for batch in val_loader:
+            if batch is None:
+                continue
+            
+            pixel_values = model.x_encoder.preprocess_frames(batch["frames"], device=device)
+            query_tokens = model.query_encoder.tokenize(batch["queries"], device=device)
+            
+            if dtype == "bf16" and torch.cuda.is_available():
+                with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+                    outputs = model(
+                        pixel_values, query_tokens["input_ids"],
+                        query_tokens["attention_mask"], batch["captions"]
+                    )
+                    loss, loss_dict = vl_jepa_loss(
+                        outputs["sy_hat"], outputs["sy"],
+                        temperature=0.025, sigreg_weight=0.05, sigreg_module=sigreg
+                    )
+            else:
+                outputs = model(
+                    pixel_values, query_tokens["input_ids"],
+                    query_tokens["attention_mask"], batch["captions"]
+                )
+                loss, loss_dict = vl_jepa_loss(
+                    outputs["sy_hat"], outputs["sy"],
+                    temperature=0.025, sigreg_weight=0.05, sigreg_module=sigreg
+                )
+            
+            val_loss += loss.item()
+            val_infonce += loss_dict["loss/infonce"]
+            val_batches += 1
+    
+    model.train()
+    return val_loss / val_batches if val_batches > 0 else 999
+
 def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
-    """Test une config - 100 steps avec logging complet"""
+    """Test une config - 100 steps train + validation"""
     print(f"\n{'='*60}")
     print(f"Essai: {name}")
     print(f"  batch={batch}, lr={lr}, dtype={dtype}, workers={workers}")
@@ -61,20 +103,36 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
         model = VLJepa(config).to(device)
         print(f"✓ Modèle chargé en {time.time()-t0:.1f}s")
         
-        # Dataset
-        print("Chargement dataset...")
-        dataset = CharadesSTADataset(
+        # Dataset train
+        print("Chargement dataset train...")
+        train_dataset = CharadesSTADataset(
             anno_file="data/charades_sta_train.txt",
             videos_dir="data/Charades_v1_480",
             config=config,
             split="train",
         )
-        subset = Subset(dataset, list(range(min(500, len(dataset)))))
-        loader = DataLoader(
-            subset, batch_size=batch, shuffle=True,
+        train_subset = Subset(train_dataset, list(range(min(500, len(train_dataset)))))
+        train_loader = DataLoader(
+            train_subset, batch_size=batch, shuffle=True,
             num_workers=workers, collate_fn=collate_fn, pin_memory=True
         )
-        print(f"✓ Dataset: {len(subset)} échantillons")
+        print(f"✓ Train: {len(train_subset)} échantillons")
+        
+        # Dataset validation (100 samples)
+        print("Chargement dataset validation...")
+        val_dataset = CharadesSTADataset(
+            anno_file="data/charades_sta_train.txt",
+            videos_dir="data/Charades_v1_480",
+            config=config,
+            split="train",
+        )
+        # Prendre les samples 500-600 pour validation (différents du train)
+        val_subset = Subset(val_dataset, list(range(500, min(600, len(val_dataset)))))
+        val_loader = DataLoader(
+            val_subset, batch_size=batch, shuffle=False,
+            num_workers=workers, collate_fn=collate_fn, pin_memory=True
+        )
+        print(f"✓ Val: {len(val_subset)} échantillons")
         
         # Optimizer & Loss
         sigreg = SIGReg(knots=17).to(device)
@@ -84,15 +142,15 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
         ], weight_decay=0.05)
         
         # Training loop
-        print("\nDébut entraînement...")
+        print("\n📊 Entraînement...")
         model.train()
         torch.cuda.synchronize()
-        t0 = time.time()
+        t0_train = time.time()
         
         steps_done = 0
-        losses = []
+        train_losses = []
         
-        for batch_idx, batch in enumerate(loader):
+        for batch_idx, batch in enumerate(train_loader):
             if steps_done >= max_steps:
                 break
             if batch is None:
@@ -131,60 +189,59 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
                 optimizer.step()
                 optimizer.zero_grad()
                 steps_done += 1
-                losses.append(loss.item())
+                train_losses.append(loss.item())
                 
-                # W&B log - TOUTES les métriques
+                # W&B log
                 if HAS_WANDB:
                     wandb.log({
                         "train/loss": loss.item(),
                         "train/infonce": loss_dict["loss/infonce"],
                         "train/sigreg": loss_dict.get("loss/sigreg", 0),
                         "train/step": steps_done,
-                        "train/epoch": steps_done // len(loader),
                     })
                 
                 if steps_done % 20 == 0:
-                    print(f"  step {steps_done:3d}/{max_steps} | loss: {loss.item():.4f} | infonce: {loss_dict['loss/infonce']:.4f}")
+                    print(f"  step {steps_done:3d}/{max_steps} | loss: {loss.item():.4f}")
         
         torch.cuda.synchronize()
-        elapsed = time.time() - t0
-        vram = torch.cuda.max_memory_allocated() / 1e9
+        train_time = time.time() - t0_train
+        train_avg_loss = sum(train_losses) / len(train_losses) if train_losses else 999
         
-        if steps_done >= max_steps * 0.7:  # Au moins 70% des steps
-            avg_loss = sum(losses) / len(losses) if losses else 999
-            throughput = steps_done * batch / elapsed
-            
-            print(f"\n✓ SUCCÈS!")
-            print(f"  Steps: {steps_done}/{max_steps}")
-            print(f"  Temps: {elapsed:.1f}s")
-            print(f"  Throughput: {throughput:.1f} samples/sec")
-            print(f"  Loss moyenne: {avg_loss:.4f}")
-            print(f"  VRAM: {vram:.1f}GB")
-            
-            result = {
-                "name": name, "batch": batch, "lr": lr, "dtype": dtype,
-                "workers": workers, "throughput": throughput, "loss": avg_loss,
-                "time": elapsed, "vram_gb": vram, "steps": steps_done, "success": True
-            }
-            
-            if HAS_WANDB:
-                wandb.log({
-                    "final/throughput": throughput,
-                    "final/avg_loss": avg_loss,
-                    "final/vram_gb": vram,
-                    "final/steps": steps_done,
-                })
-                run.finish()
-            
-            return result
-        else:
-            print(f"\n✗ ÉCHEC: seulement {steps_done} steps sur {max_steps}")
-            if HAS_WANDB:
-                run.finish()
-            return {"name": name, "success": False, "reason": f"only_{steps_done}_steps"}
+        # Validation
+        print(f"\n📊 Validation...")
+        val_avg_loss = validate(model, val_loader, sigreg, device, dtype)
+        
+        vram = torch.cuda.max_memory_allocated() / 1e9
+        throughput = steps_done * batch / train_time
+        
+        print(f"\n✓ Terminé!")
+        print(f"  Steps: {steps_done}/{max_steps}")
+        print(f"  Temps train: {train_time:.1f}s")
+        print(f"  Throughput: {throughput:.0f} samples/sec")
+        print(f"  Train loss: {train_avg_loss:.4f}")
+        print(f"  Val loss: {val_avg_loss:.4f}")
+        print(f"  VRAM: {vram:.1f}GB")
+        
+        # W&B log final
+        if HAS_WANDB:
+            wandb.log({
+                "val/loss": val_avg_loss,
+                "final/throughput": throughput,
+                "final/train_loss": train_avg_loss,
+                "final/vram_gb": vram,
+            })
+            run.finish()
+        
+        return {
+            "name": name, "batch": batch, "lr": lr, "dtype": dtype,
+            "workers": workers, "throughput": throughput,
+            "train_loss": train_avg_loss, "val_loss": val_avg_loss,
+            "time": train_time, "vram_gb": vram, "steps": steps_done,
+            "success": True
+        }
             
     except Exception as e:
-        print(f"\n✗ ÉCHEC CRITIQUE: {e}")
+        print(f"\n✗ ÉCHEC: {e}")
         import traceback
         traceback.print_exc()
         if HAS_WANDB:
@@ -196,7 +253,7 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
             torch.cuda.empty_cache()
 
 def main():
-    print("🚀 Autoresearch GPU-Optimisé (3 essais × 100 steps)")
+    print("🚀 Autoresearch GPU-Optimisé (3 essais × 100 steps + val)")
     print(f"Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print(f"W&B: {'✓ activé' if HAS_WANDB else '✗ désactivé'}\n")
     
@@ -216,12 +273,21 @@ def main():
     successful = [r for r in results if r.get("success")]
     
     if successful:
-        for r in sorted(successful, key=lambda x: -x["throughput"]):
-            print(f"✓ {r['name']}: {r['throughput']:.0f} samp/s, loss={r['loss']:.4f}, VRAM={r['vram_gb']:.1f}GB")
+        print("Config | Val Loss | Train Loss | Throughput | VRAM")
+        print("-" * 60)
+        for r in successful:
+            print(f"{r['name']:20} | {r['val_loss']:.4f} | {r['train_loss']:.4f} | {r['throughput']:6.0f} | {r['vram_gb']:.1f}GB")
         
-        best = max(successful, key=lambda x: x["throughput"])
-        print(f"\n🏆 MEILLEUR: {best['name']}")
-        print(f"   batch={best['batch']}, lr={best['lr']}, dtype={best['dtype']}, workers={best['workers']}")
+        # Meilleur par val_loss
+        best_quality = min(successful, key=lambda x: x["val_loss"])
+        best_speed = max(successful, key=lambda x: x["throughput"])
+        
+        print(f"\n🏆 Meilleur qualité (val_loss): {best_quality['name']}")
+        print(f"   Val loss: {best_quality['val_loss']:.4f}")
+        print(f"   Config: batch={best_quality['batch']}, lr={best_quality['lr']}, dtype={best_quality['dtype']}")
+        
+        print(f"\n🏆 Meilleur vitesse: {best_speed['name']}")
+        print(f"   Throughput: {best_speed['throughput']:.0f} samples/sec")
     else:
         print("✗ Tous les essais ont échoué:")
         for r in results:
