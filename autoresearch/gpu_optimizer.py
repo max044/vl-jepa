@@ -9,7 +9,7 @@ import time
 import torch
 from pathlib import Path
 from vljepa.models import VLJepa, XEncoder, QueryEncoder, Predictor, YEncoder
-from vljepa.config import VLJEPAConfig
+from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.losses import vl_jepa_loss, SIGReg
 from torch.utils.data import DataLoader, Subset
@@ -32,7 +32,7 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
     
     try:
         # Config
-        config = VLJEPAConfig(
+        config = Config(
             batch_size=batch,
             lr=lr,
             num_workers=workers,
