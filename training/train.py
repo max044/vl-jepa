@@ -41,17 +41,17 @@ DATA_DIR = Path("data")
 # Ces paramètres viennent des expériences autoresearch
 # ---------------------------------------------------------------------------
 
-# Training
-BATCH_SIZE = 2
-GRAD_ACCUMULATION = 2  # Effective batch = 4
-LEARNING_RATE = 1e-4  # À ajuster selon résultats autoresearch
-WARMUP_STEPS = 500
-WEIGHT_DECAY = 0.05
+# Training - PARAMÈTRES OPTIMISÉS (AutoResearch 2026-03-19)
+BATCH_SIZE = 4  # Augmenté (VRAM disponible: 48GB)
+GRAD_ACCUMULATION = 2  # Effective batch = 8
+LEARNING_RATE = 3e-4  # Optimal trouvé
+WARMUP_STEPS = 100  # Optimal trouvé
+WEIGHT_DECAY = 0.05  # Optimal trouvé
 MAX_EPOCHS = 20  # Entraînement complet
 
 # Loss
-TEMPERATURE = 0.07  # À ajuster selon résultats autoresearch
-SIGREG_WEIGHT = 0.1  # À ajuster selon résultats autoresearch
+TEMPERATURE = 0.025  # Optimal trouvé
+SIGREG_WEIGHT = 0.05  # Optimal trouvé
 
 # Model
 PREDICTOR_LAYERS = 0  # 0 = use all layers
@@ -212,9 +212,20 @@ print(f"Starting training...\n")
 
 # W&B
 if USE_WANDB and HAS_WANDB:
+    run_name = f"full_lr{LEARNING_RATE}_temp{TEMPERATURE}_bs{BATCH_SIZE}_ep{MAX_EPOCHS}"
+    tags = [
+        "full_training",
+        f"lr_{LEARNING_RATE}",
+        f"temp_{TEMPERATURE}",
+        f"batch_{BATCH_SIZE}",
+        f"epochs_{MAX_EPOCHS}",
+    ]
+    
     wandb.init(
         project=WANDB_PROJECT,
         config=asdict(config),
+        name=run_name,
+        tags=tags,
         reinit=True,
     )
 
@@ -368,33 +379,49 @@ for epoch in range(MAX_EPOCHS):
                     "epoch": epoch + 1,
                 })
             
-            # Save checkpoint if best
+            # Save checkpoint if best (overwrite previous best)
             if avg_val_loss <= best_val_loss:
                 checkpoint_dir = Path("checkpoints")
                 checkpoint_dir.mkdir(exist_ok=True)
                 
-                checkpoint_path = checkpoint_dir / f"best_e{epoch+1}.pt"
+                # Save only best checkpoint (overwrite)
+                checkpoint_path = checkpoint_dir / "best.pt"
                 torch.save({
                     'epoch': epoch + 1,
                     'step': step,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'val_loss': avg_val_loss,
+                    'best_val_loss': best_val_loss,
                     'config': asdict(config),
                 }, checkpoint_path)
                 
-                print(f"  💾 Saved best checkpoint: {checkpoint_path}")
+                print(f"  💾 Saved best checkpoint: {checkpoint_path} (val_loss: {avg_val_loss:.4f})")
                 
-                # Also save to W&B
+                # Save to W&B
                 if USE_WANDB and HAS_WANDB and wandb.run:
-                    artifact = wandb.Artifact(f"model-checkpoint-e{epoch+1}", type="model")
-                    artifact.add_file(checkpoint_path)
-                    wandb.log_artifact(artifact)
+                    wandb.save(str(checkpoint_path))
+                    wandb.run.summary["best_epoch"] = epoch + 1
+                    wandb.run.summary["best_val_loss"] = best_val_loss
+            
+            # Always save last checkpoint (overwrite)
+            checkpoint_dir = Path("checkpoints")
+            checkpoint_dir.mkdir(exist_ok=True)
+            last_checkpoint_path = checkpoint_dir / "last.pt"
+            torch.save({
+                'epoch': epoch + 1,
+                'step': step,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': avg_val_loss,
+                'best_val_loss': best_val_loss,
+                'config': asdict(config),
+            }, last_checkpoint_path)
 
 print()  # newline
 
 # ---------------------------------------------------------------------------
-# Final evaluation
+# Final evaluation - Validation Set
 # ---------------------------------------------------------------------------
 
 model.eval()
@@ -441,6 +468,81 @@ if val_batches > 0:
 
 best_val_loss = min(best_val_loss, final_val_loss)
 
+# ---------------------------------------------------------------------------
+# Final evaluation - Test Set (held-out)
+# ---------------------------------------------------------------------------
+
+print("\n🧪 Loading test set for final evaluation...")
+
+from torch.utils.data import Subset
+test_dataset = CharadesSTADataset(
+    anno_file=str(DATA_DIR / "charades_sta_test.txt"),
+    videos_dir=str(DATA_DIR / "Charades_v1_480"),
+    config=config,
+    split="test",
+)
+
+test_loader = DataLoader(
+    test_dataset,
+    batch_size=config.batch_size,
+    shuffle=False,
+    num_workers=NUM_WORKERS,
+    collate_fn=collate_fn,
+    pin_memory=True,
+)
+
+print(f"Test set: {len(test_dataset)} samples")
+
+model.eval()
+test_loss = 0.0
+test_infonce = 0.0
+test_sigreg = 0.0
+test_batches = 0
+
+with torch.no_grad():
+    for batch in test_loader:
+        if batch is None:
+            continue
+        
+        pixel_values = model.x_encoder.preprocess_frames(
+            batch["frames"], device=device
+        )
+        query_tokens = model.query_encoder.tokenize(
+            batch["queries"], device=device
+        )
+        
+        outputs = model(
+            pixel_values,
+            query_tokens["input_ids"],
+            query_tokens["attention_mask"],
+            batch["captions"],
+        )
+        
+        sy_hat = outputs["sy_hat"]
+        sy = outputs["sy"]
+        
+        loss, loss_dict = vl_jepa_loss(
+            sy_hat, sy,
+            temperature=config.temperature,
+            sigreg_weight=config.sigreg_weight,
+            sigreg_module=sigreg,
+        )
+
+        test_loss += loss.item()
+        test_infonce += loss_dict["loss/infonce"]
+        test_sigreg += loss_dict.get("loss/sigreg", 0)
+        test_batches += 1
+
+if test_batches > 0:
+    test_loss /= test_batches
+    test_infonce /= test_batches
+    test_sigreg /= test_batches
+    
+    print(f"\n📊 FINAL TEST RESULTS:")
+    print(f"  test/loss:     {test_loss:.6f}")
+    print(f"  test/infonce:  {test_infonce:.6f}")
+    print(f"  test/sigreg:   {test_sigreg:.6f}")
+
 # Memory
 peak_vram_mb = 0
 if torch.cuda.is_available():
@@ -454,15 +556,33 @@ startup_time = t_start_training - t_start
 # ---------------------------------------------------------------------------
 
 print("---")
-print(f"val_loss:         {final_val_loss:.6f}")
-print(f"best_val_loss:    {best_val_loss:.6f}")
-print(f"training_seconds: {total_training_time:.1f}")
-print(f"total_seconds:    {t_end - t_start:.1f}")
-print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
-print(f"num_steps:        {step}")
-print(f"num_epochs:       {epoch}")
-print(f"batch_size:       {BATCH_SIZE}")
-print(f"lr:               {LEARNING_RATE}")
+print(f"FINAL VALIDATION:")
+print(f"  val_loss:         {final_val_loss:.6f}")
+print(f"  best_val_loss:    {best_val_loss:.6f}")
+print(f"FINAL TEST:")
+print(f"  test_loss:        {test_loss:.6f}")
+print(f"  test_infonce:     {test_infonce:.6f}")
+print(f"TRAINING INFO:")
+print(f"  training_seconds: {total_training_time:.1f}")
+print(f"  total_seconds:    {t_end - t_start:.1f}")
+print(f"  peak_vram_mb:     {peak_vram_mb:.1f}")
+print(f"  num_steps:        {step}")
+print(f"  num_epochs:       {MAX_EPOCHS}")
+print(f"  batch_size:       {BATCH_SIZE}")
+print(f"  lr:               {LEARNING_RATE}")
 
 if USE_WANDB and HAS_WANDB and wandb.run:
+    # Final summary
+    wandb.run.summary.update({
+        "final/val_loss": final_val_loss,
+        "final/best_val_loss": best_val_loss,
+        "final/test_loss": test_loss,
+        "final/test_infonce": test_infonce,
+        "final/test_sigreg": test_sigreg,
+        "final/training_time": total_training_time,
+        "final/total_time": t_end - t_start,
+        "final/peak_vram_mb": peak_vram_mb,
+        "final/num_steps": step,
+        "final/num_epochs": MAX_EPOCHS,
+    })
     wandb.finish()
