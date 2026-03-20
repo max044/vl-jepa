@@ -307,6 +307,16 @@ for epoch in range(MAX_EPOCHS):
         epoch_infonce += loss_dict["loss/infonce"]
         num_batches += 1
         
+        # Log to W&B every 10 steps
+        if USE_WANDB and HAS_WANDB and wandb.run and step % 10 == 0:
+            wandb.log({
+                "train/loss": train_loss,
+                "train/infonce": loss_dict["loss/infonce"],
+                "train/sigreg": loss_dict.get("loss/sigreg", 0),
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "step": step,
+            })
+        
         # Smooth loss for display
         ema_beta = 0.9
         smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss
