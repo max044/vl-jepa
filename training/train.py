@@ -475,6 +475,13 @@ with torch.no_grad():
 if val_batches > 0:
     final_val_loss /= val_batches
     final_val_infonce /= val_batches
+    
+    # Log final validation metrics to W&B
+    if USE_WANDB and HAS_WANDB and wandb.run:
+        wandb.log({
+            "final/val_loss": final_val_loss,
+            "final/val_infonce": final_val_infonce,
+        })
 
 best_val_loss = min(best_val_loss, final_val_loss)
 
@@ -552,6 +559,14 @@ if test_batches > 0:
     print(f"  test/loss:     {test_loss:.6f}")
     print(f"  test/infonce:  {test_infonce:.6f}")
     print(f"  test/sigreg:   {test_sigreg:.6f}")
+    
+    # Log final test metrics to W&B
+    if USE_WANDB and HAS_WANDB and wandb.run:
+        wandb.log({
+            "final/test_loss": test_loss,
+            "final/test_infonce": test_infonce,
+            "final/test_sigreg": test_sigreg,
+        })
 
 # Memory
 peak_vram_mb = 0
