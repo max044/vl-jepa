@@ -45,6 +45,10 @@ from prepare import TIME_BUDGET, DATA_DIR
 if os.path.basename(os.getcwd()) == "autoresearch":
     DATA_DIR = Path("../data/autoresearch")
 
+# Multiprocessing fix for macOS
+import multiprocessing
+multiprocessing.set_start_method('fork', force=True)
+
 # ---------------------------------------------------------------------------
 # Hyperparameters (BEST found so far - edit for experiments)
 # ---------------------------------------------------------------------------
