@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Autoresearch GPU-Optimisé
-3 essais × 100 steps avec train + val + W&B
+3 essais × ~60 steps avec validation toutes les 25 steps
 """
 
 import json
@@ -26,6 +26,8 @@ EXPERIMENTS = [
     (16, 1, 4e-4, "bf16", 8, "bf16_b16_w8"),
     (16, 1, 5e-4, "bf16", 16, "bf16_b16_w16"),
 ]
+
+VAL_EVERY = 25  # Validation toutes les 25 steps
 
 def validate(model, val_loader, sigreg, device, dtype):
     """Validation sur 100 samples"""
@@ -69,11 +71,12 @@ def validate(model, val_loader, sigreg, device, dtype):
     model.train()
     return val_loss / val_batches if val_batches > 0 else 999
 
-def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
-    """Test une config - 100 steps train + validation"""
+def test_config(batch, grad_acc, lr, dtype, workers, name, timeout_sec=300):
+    """Test une config avec timeout et validation régulière"""
     print(f"\n{'='*60}")
     print(f"Essai: {name}")
     print(f"  batch={batch}, lr={lr}, dtype={dtype}, workers={workers}")
+    print(f"  Timeout: {timeout_sec}s, Validation: toutes les {VAL_EVERY} steps")
     print(f"{'='*60}\n")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,6 +92,7 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
                 "lr": lr,
                 "dtype": dtype,
                 "num_workers": workers,
+                "val_every": VAL_EVERY,
             },
             reinit=True,
         )
@@ -101,10 +105,11 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
         print("Chargement modèle...")
         t0 = time.time()
         model = VLJepa(config).to(device)
-        print(f"✓ Modèle chargé en {time.time()-t0:.1f}s")
+        load_time = time.time() - t0
+        print(f"✓ Modèle en {load_time:.1f}s")
         
         # Dataset train
-        print("Chargement dataset train...")
+        print("Chargement train...")
         train_dataset = CharadesSTADataset(
             anno_file="data/charades_sta_train.txt",
             videos_dir="data/Charades_v1_480",
@@ -116,23 +121,22 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
             train_subset, batch_size=batch, shuffle=True,
             num_workers=workers, collate_fn=collate_fn, pin_memory=True
         )
-        print(f"✓ Train: {len(train_subset)} échantillons")
+        print(f"✓ Train: {len(train_subset)} samples")
         
-        # Dataset validation (100 samples)
-        print("Chargement dataset validation...")
+        # Dataset validation
+        print("Chargement val...")
         val_dataset = CharadesSTADataset(
             anno_file="data/charades_sta_train.txt",
             videos_dir="data/Charades_v1_480",
             config=config,
             split="train",
         )
-        # Prendre les samples 500-600 pour validation (différents du train)
         val_subset = Subset(val_dataset, list(range(500, min(600, len(val_dataset)))))
         val_loader = DataLoader(
             val_subset, batch_size=batch, shuffle=False,
             num_workers=workers, collate_fn=collate_fn, pin_memory=True
         )
-        print(f"✓ Val: {len(val_subset)} échantillons")
+        print(f"✓ Val: {len(val_subset)} samples")
         
         # Optimizer & Loss
         sigreg = SIGReg(knots=17).to(device)
@@ -141,18 +145,22 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
             {"params": model.y_encoder.projection.parameters(), "lr": lr * 0.05},
         ], weight_decay=0.05)
         
-        # Training loop
-        print("\n📊 Entraînement...")
+        # Training loop avec timeout
+        print(f"\n📊 Entraînement (timeout {timeout_sec}s)...")
         model.train()
         torch.cuda.synchronize()
         t0_train = time.time()
         
         steps_done = 0
         train_losses = []
+        best_val_loss = float('inf')
         
         for batch_idx, batch in enumerate(train_loader):
-            if steps_done >= max_steps:
+            # Timeout check
+            if time.time() - t0_train > timeout_sec:
+                print(f"\n⏱️ Timeout atteint ({timeout_sec}s)")
                 break
+            
             if batch is None:
                 continue
             
@@ -191,7 +199,7 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
                 steps_done += 1
                 train_losses.append(loss.item())
                 
-                # W&B log
+                # W&B log train
                 if HAS_WANDB:
                     wandb.log({
                         "train/loss": loss.item(),
@@ -200,42 +208,57 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
                         "train/step": steps_done,
                     })
                 
-                if steps_done % 20 == 0:
-                    print(f"  step {steps_done:3d}/{max_steps} | loss: {loss.item():.4f}")
+                # Validation toutes les VAL_EVERY steps
+                if steps_done % VAL_EVERY == 0:
+                    val_loss = validate(model, val_loader, sigreg, device, dtype)
+                    best_val_loss = min(best_val_loss, val_loss)
+                    
+                    print(f"  step {steps_done} | train_loss: {loss.item():.4f} | val_loss: {val_loss:.4f}")
+                    
+                    if HAS_WANDB:
+                        wandb.log({
+                            "val/loss": val_loss,
+                            "val/best": best_val_loss,
+                            "val/step": steps_done,
+                        })
+                elif steps_done % 10 == 0:
+                    print(f"  step {steps_done} | train_loss: {loss.item():.4f}")
         
         torch.cuda.synchronize()
         train_time = time.time() - t0_train
         train_avg_loss = sum(train_losses) / len(train_losses) if train_losses else 999
-        
-        # Validation
-        print(f"\n📊 Validation...")
-        val_avg_loss = validate(model, val_loader, sigreg, device, dtype)
-        
         vram = torch.cuda.max_memory_allocated() / 1e9
-        throughput = steps_done * batch / train_time
+        throughput = steps_done * batch / train_time if steps_done > 0 else 0
+        
+        # Validation finale si pas faite
+        if steps_done > 0 and (steps_done % VAL_EVERY != 0 or steps_done < VAL_EVERY):
+            val_loss = validate(model, val_loader, sigreg, device, dtype)
+            best_val_loss = min(best_val_loss, val_loss)
+            if HAS_WANDB:
+                wandb.log({"val/loss": val_loss, "val/step": steps_done})
         
         print(f"\n✓ Terminé!")
-        print(f"  Steps: {steps_done}/{max_steps}")
-        print(f"  Temps train: {train_time:.1f}s")
+        print(f"  Steps: {steps_done}")
+        print(f"  Temps: {train_time:.1f}s")
         print(f"  Throughput: {throughput:.0f} samples/sec")
         print(f"  Train loss: {train_avg_loss:.4f}")
-        print(f"  Val loss: {val_avg_loss:.4f}")
+        print(f"  Val loss: {best_val_loss:.4f}")
         print(f"  VRAM: {vram:.1f}GB")
         
-        # W&B log final
         if HAS_WANDB:
             wandb.log({
-                "val/loss": val_avg_loss,
                 "final/throughput": throughput,
                 "final/train_loss": train_avg_loss,
+                "final/val_loss": best_val_loss,
                 "final/vram_gb": vram,
+                "final/steps": steps_done,
             })
             run.finish()
         
         return {
             "name": name, "batch": batch, "lr": lr, "dtype": dtype,
             "workers": workers, "throughput": throughput,
-            "train_loss": train_avg_loss, "val_loss": val_avg_loss,
+            "train_loss": train_avg_loss, "val_loss": best_val_loss,
             "time": train_time, "vram_gb": vram, "steps": steps_done,
             "success": True
         }
@@ -253,13 +276,13 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
             torch.cuda.empty_cache()
 
 def main():
-    print("🚀 Autoresearch GPU-Optimisé (3 essais × 100 steps + val)")
+    print("🚀 Autoresearch GPU-Optimisé (3 essais × 5min, val toutes les 25 steps)")
     print(f"Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print(f"W&B: {'✓ activé' if HAS_WANDB else '✗ désactivé'}\n")
     
     results = []
     for batch, grad_acc, lr, dtype, workers, name in EXPERIMENTS:
-        result = test_config(batch, grad_acc, lr, dtype, workers, name)
+        result = test_config(batch, grad_acc, lr, dtype, workers, name, timeout_sec=300)
         results.append(result)
         if len(results) < len(EXPERIMENTS):
             print("\n⏳ Pause 5s entre essais...")
@@ -273,21 +296,16 @@ def main():
     successful = [r for r in results if r.get("success")]
     
     if successful:
-        print("Config | Val Loss | Train Loss | Throughput | VRAM")
-        print("-" * 60)
+        print(f"{'Config':<20} | {'Val Loss':>8} | {'Train Loss':>10} | {'Speed':>8} | {'VRAM':>6}")
+        print("-" * 70)
         for r in successful:
-            print(f"{r['name']:20} | {r['val_loss']:.4f} | {r['train_loss']:.4f} | {r['throughput']:6.0f} | {r['vram_gb']:.1f}GB")
+            print(f"{r['name']:<20} | {r['val_loss']:8.4f} | {r['train_loss']:10.4f} | {r['throughput']:6.0f} | {r['vram_gb']:4.1f}GB")
         
         # Meilleur par val_loss
-        best_quality = min(successful, key=lambda x: x["val_loss"])
-        best_speed = max(successful, key=lambda x: x["throughput"])
-        
-        print(f"\n🏆 Meilleur qualité (val_loss): {best_quality['name']}")
-        print(f"   Val loss: {best_quality['val_loss']:.4f}")
-        print(f"   Config: batch={best_quality['batch']}, lr={best_quality['lr']}, dtype={best_quality['dtype']}")
-        
-        print(f"\n🏆 Meilleur vitesse: {best_speed['name']}")
-        print(f"   Throughput: {best_speed['throughput']:.0f} samples/sec")
+        best = min(successful, key=lambda x: x["val_loss"])
+        print(f"\n🏆 MEILLEUR CONFIG (val_loss): {best['name']}")
+        print(f"   Val loss: {best['val_loss']:.4f}")
+        print(f"   Config: batch={best['batch']}, lr={best['lr']}, dtype={best['dtype']}, workers={best['workers']}")
     else:
         print("✗ Tous les essais ont échoué:")
         for r in results:
