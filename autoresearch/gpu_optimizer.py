@@ -8,7 +8,7 @@ import json
 import time
 import torch
 from pathlib import Path
-from vljepa.models import create_vl_jepa_model
+from vljepa.models import VLJepa, XEncoder, QueryEncoder, Predictor, YEncoder
 from vljepa.config import VLJEPAConfig
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.losses import vl_jepa_loss, SIGReg
@@ -43,7 +43,8 @@ def test_config(batch, grad_acc, lr, dtype, workers, name, max_steps=100):
         
         # Modèle
         t0 = time.time()
-        model = create_vl_jepa_model(config, device)
+        model = VLJepa(config)
+        model = model.to(device)
         load_time = time.time() - t0
         print(f"✓ Model loaded in {load_time:.1f}s")
         
