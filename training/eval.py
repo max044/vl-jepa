@@ -216,8 +216,7 @@ def main():
                 
                 if fb_list:
                     pixel_values = torch.stack(fb_list, dim=0)
-                    with torch.autocast(device_type="cuda" if "cuda" in str(config.device) else "cpu", dtype=torch.float16):
-                        all_sv.append(model.x_encoder(pixel_values))
+                    all_sv.append(model.x_encoder(pixel_values))
             
             if not all_sv:
                 skipped += len(group); pbar.update(len(group)); continue
@@ -236,8 +235,7 @@ def main():
             for j in range(0, sv_full.size(0), bs):
                 b_sv = sv_full[j : j + bs]
                 current_bs = b_sv.size(0)
-                with torch.autocast(device_type="cuda" if "cuda" in str(config.device) else "cpu", dtype=torch.float16):
-                    outputs = model.predictor(b_sv, nq_ids[:current_bs], nq_mask[:current_bs])
+                outputs = model.predictor(b_sv, nq_ids[:current_bs], nq_mask[:current_bs])
                 
                 all_sy_hat.append(F.normalize(outputs["sy_hat"], dim=-1))
                 if "offsets" in outputs and getattr(config, "use_regression", False):
@@ -247,11 +245,10 @@ def main():
             
             # 4. Compute similarities for each query in the group
             captions = [s["caption"] for s in group]
-            with torch.autocast(device_type="cuda" if "cuda" in str(config.device) else "cpu", dtype=torch.float16):
-                sy_refs = F.normalize(model.encode_text(captions, device=config.device), dim=-1) # (NumQueries, Embed)
+            sy_refs = F.normalize(model.encode_text(captions, device=config.device), dim=-1) # (NumQueries, Embed)
             
             # (NumProposals, Embed) @ (Embed, NumQueries) -> (NumProposals, NumQueries)
-            all_sims = (sy_hat_full.float() @ sy_refs.float().T).cpu().numpy()
+            all_sims = (sy_hat_full @ sy_refs.T).cpu().numpy()
             
             for q_idx, sample in enumerate(group):
                 scores = all_sims[:, q_idx].tolist()
