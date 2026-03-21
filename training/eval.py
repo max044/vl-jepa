@@ -91,10 +91,11 @@ def main():
 
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
+        entity = os.getenv("WANDB_ENTITY", "maxence-cabiddu")
         if args.wandb_run_path:
-            wandb.init(project=args.wandb_project, id=args.wandb_run_path.split("/")[-1], resume="allow", tags=["eval"])
+            wandb.init(project=args.wandb_project, entity=entity, id=args.wandb_run_path.split("/")[-1], resume="allow", tags=["eval"])
         else:
-            wandb.init(project=args.wandb_project, config=config.__dict__, job_type="eval", tags=["eval"])
+            wandb.init(project=args.wandb_project, entity=entity, config=config.__dict__, job_type="eval", tags=["eval"])
 
     # Load model & move to device (keep fp32 for compatibility)
     model = VLJepa(config).to(config.device)
