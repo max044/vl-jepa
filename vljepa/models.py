@@ -87,12 +87,15 @@ class XEncoder(nn.Module):
 
     def preprocess_video(self, video_frames: np.ndarray, device: str = "cpu") -> torch.Tensor:
         """Optimized preprocessing for a full video on GPU."""
-        t = torch.tensor(video_frames, dtype=torch.float16, device=device)
-        t = t[..., [2, 1, 0]]
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.config.dtype, torch.float32)
+        
+        t = torch.tensor(video_frames, dtype=dtype, device=device)
+        t = t[..., [2, 1, 0]]  # BGR to RGB
         t = t.permute(0, 3, 1, 2) / 255.0
         t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
-        mean = torch.tensor([0.485, 0.456, 0.406], device=device, dtype=torch.float16).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], device=device, dtype=torch.float16).view(1, 3, 1, 1)
+        
+        mean = torch.tensor([0.485, 0.456, 0.406], device=device, dtype=dtype).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=device, dtype=dtype).view(1, 3, 1, 1)
         t = (t - mean) / std
         return t
 

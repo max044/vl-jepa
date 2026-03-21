@@ -220,47 +220,50 @@ def main():
                 
             sv_full = torch.cat(all_sv, dim=0) # (NumProposals, Hidden)
 
-            # 3. Predict for each query vectorially
+            # 3. Predict once for all proposals in this video using Neutral Query
+            neutral_query = "What is happening in this video?"
+            nq_t = model.query_encoder.tokenize([neutral_query], device=config.device)
+            nq_ids = nq_t["input_ids"].expand(bs, -1)
+            nq_mask = nq_t["attention_mask"].expand(bs, -1)
+            
+            all_sy_hat = []
+            all_offsets = []
+            
+            for j in range(0, sv_full.size(0), bs):
+                b_sv = sv_full[j : j + bs]
+                current_bs = b_sv.size(0)
+                outputs = model.predictor(b_sv, nq_ids[:current_bs], nq_mask[:current_bs])
+                
+                all_sy_hat.append(F.normalize(outputs["sy_hat"], dim=-1))
+                if "offsets" in outputs and getattr(config, "use_regression", False):
+                    all_offsets.append(outputs["offsets"])
+            
+            sy_hat_full = torch.cat(all_sy_hat, dim=0) # (NumProposals, Embed)
+            
+            # 4. Compute similarities for each query in the group
             captions = [s["caption"] for s in group]
-            # Pre-compute all query references for the video
             sy_refs = F.normalize(model.encode_text(captions, device=config.device), dim=-1) # (NumQueries, Embed)
             
-            # Tokenize queries once
-            qt = model.query_encoder.tokenize(captions, device=config.device)
+            # (NumProposals, Embed) @ (Embed, NumQueries) -> (NumProposals, NumQueries)
+            all_sims = (sy_hat_full @ sy_refs.T).cpu().numpy()
             
             for q_idx, sample in enumerate(group):
-                sy_ref = sy_refs[q_idx:q_idx+1]
-                q_ids = qt["input_ids"][q_idx:q_idx+1].expand(bs, -1)
-                q_mask = qt["attention_mask"][q_idx:q_idx+1].expand(bs, -1)
+                scores = all_sims[:, q_idx].tolist()
                 
-                sims_list = []
-                refined_proposals = []
+                # Refine proposals if regression was used
+                if all_offsets:
+                    offsets_full = torch.cat(all_offsets, dim=0).cpu().numpy()
+                    refined_proposals = []
+                    for idx, (p_start, p_end) in enumerate(valid_p):
+                        dur = p_end - p_start
+                        o_start, o_end = offsets_full[idx]
+                        refined_proposals.append((
+                            max(0, p_start + o_start * dur),
+                            min(duration, p_end + o_end * dur)
+                        ))
+                else:
+                    refined_proposals = valid_p
                 
-                for j in range(0, sv_full.size(0), bs):
-                    b_sv = sv_full[j : j + bs]
-                    current_bs = b_sv.size(0)
-                    b_q_ids = q_ids[:current_bs]
-                    b_q_mask = q_mask[:current_bs]
-                    
-                    outputs = model.predictor(b_sv, b_q_ids, b_q_mask)
-                    sy_hat = F.normalize(outputs["sy_hat"], dim=-1)
-                    sims_list.append((sy_hat @ sy_ref.T).squeeze(-1))
-                    
-                    # Refine proposals if regression head and offsets are available
-                    b_props = valid_p[j : j + bs]
-                    if "offsets" in outputs:
-                        offsets = outputs["offsets"] # (current_bs, 2)
-                        for idx, (p_start, p_end) in enumerate(b_props):
-                            dur = p_end - p_start
-                            o_start, o_end = offsets[idx].cpu().numpy()
-                            refined_proposals.append((
-                                max(0, p_start + o_start * dur),
-                                min(duration, p_end + o_end * dur)
-                            ))
-                    else:
-                        refined_proposals.extend(b_props)
-                
-                scores = torch.cat(sims_list, dim=0).cpu().numpy().tolist()
                 k = nms(refined_proposals, scores, config.nms_threshold)
                 if k:
                     iou = temporal_iou(refined_proposals[k[0]][0], refined_proposals[k[0]][1], sample["start"], sample["end"])
