@@ -298,7 +298,8 @@ if USE_WANDB and HAS_WANDB:
         resume="allow" if resume_wandb_id else None,
     )
     # Define default step metric
-    wandb.define_metric("*", step_metric="step")
+    wandb.define_metric("global_step")
+    wandb.define_metric("*", step_metric="global_step")
 
 t_start_training = time.time()
 
@@ -374,12 +375,13 @@ for epoch in range(start_epoch, MAX_EPOCHS):
         # Log to W&B every 10 steps
         if USE_WANDB and HAS_WANDB and wandb.run and (step % 10 == 0 or step < 10):
             wandb.log({
+                "global_step": step,
                 "train/loss": train_loss,
                 "train/infonce": loss_dict["loss/infonce"],
                 "train/sigreg": loss_dict.get("loss/sigreg", 0),
                 "train/lr": optimizer.param_groups[0]["lr"],
                 "train/epoch": epoch + batch_idx / len(train_loader),
-            }, step=step)
+            })
         
         # Smooth loss for display
         ema_beta = 0.9
@@ -449,10 +451,11 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                     
                     if USE_WANDB and HAS_WANDB and wandb.run:
                         wandb.log({
+                            "global_step": step,
                             "val/loss": avg_val_loss,
                             "val/best": best_val_loss,
                             "epoch": epoch + 1 + val_pct,
-                        }, step=step)
+                        })
                     
                     # Check if improved
                     if avg_val_loss < best_val_loss:
@@ -569,10 +572,11 @@ for epoch in range(start_epoch, MAX_EPOCHS):
             
             if USE_WANDB and HAS_WANDB and wandb.run:
                 wandb.log({
+                    "global_step": step,
                     "val/loss": avg_val_loss,
                     "val/best": best_val_loss,
                     "epoch": epoch + 1,
-                }, step=step)
+                })
             
             # Check if improved
             if avg_val_loss < best_val_loss:
@@ -688,6 +692,7 @@ if val_batches > 0:
     # Log final validation metrics to W&B
     if USE_WANDB and HAS_WANDB and wandb.run:
         wandb.log({
+            "global_step": step,
             "final/val_loss": final_val_loss,
             "final/val_infonce": final_val_infonce,
         })
@@ -785,6 +790,7 @@ if test_batches > 0:
     # Log final test metrics to W&B
     if USE_WANDB and HAS_WANDB and wandb.run:
         wandb.log({
+            "global_step": step,
             "final/test_loss": test_loss,
             "final/test_infonce": test_infonce,
             "final/test_sigreg": test_sigreg,
