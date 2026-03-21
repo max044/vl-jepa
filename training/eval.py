@@ -251,7 +251,7 @@ def main():
                 sy_refs = F.normalize(model.encode_text(captions, device=config.device), dim=-1) # (NumQueries, Embed)
             
             # (NumProposals, Embed) @ (Embed, NumQueries) -> (NumProposals, NumQueries)
-            all_sims = (sy_hat_full @ sy_refs.T).cpu().numpy()
+            all_sims = (sy_hat_full.float() @ sy_refs.float().T).cpu().numpy()
             
             for q_idx, sample in enumerate(group):
                 scores = all_sims[:, q_idx].tolist()
