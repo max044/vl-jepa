@@ -198,9 +198,9 @@ class CharadesSTADataset(Dataset):
         offset_start = (start_sec - load_start) / win_dur
         offset_end = (end_sec - load_start) / win_dur
 
-        # Use the actual caption as the query for training
-        # This allows the predictor to learn to use the query to steer its prediction
-        query = sample["caption"]
+        # Use a neutral query so the predictor must rely on the video, not cheat reading the target text.
+        import random
+        query = random.choice(self.NEUTRAL_QUERIES)
 
         return {
             "frames": frames,           # list of numpy arrays (H, W, 3)
