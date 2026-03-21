@@ -831,6 +831,7 @@ print(f"  batch_size:       {BATCH_SIZE}")
 print(f"  lr:               {LEARNING_RATE}")
 
 if USE_WANDB and HAS_WANDB and wandb.run:
+    wandb_id = wandb.run.id
     # Final summary
     wandb.run.summary.update({
         "final/val_loss": final_val_loss,
@@ -845,3 +846,27 @@ if USE_WANDB and HAS_WANDB and wandb.run:
         "final/num_epochs": MAX_EPOCHS,
     })
     wandb.finish()
+else:
+    wandb_id = None
+
+# ---------------------------------------------------------------------------
+# Integration: End-to-End Evaluation via eval.py
+# ---------------------------------------------------------------------------
+best_ckpt_path = os.path.join(config.checkpoint_dir, "best.pt")
+if os.path.exists(best_ckpt_path):
+    print("\n" + "="*50)
+    print("🎉 Training Complete! Initiating Final Sliding-Window Evaluation...")
+    print("="*50)
+    
+    import subprocess
+    cmd = [
+        "python", "training/eval.py",
+        "--checkpoint", best_ckpt_path,
+    ]
+    if wandb_id:
+        cmd.extend(["--wandb-run-path", wandb_id])
+    
+    # Run eval.py synchronously
+    subprocess.run(cmd)
+
+print("\n✅ VL-JEPA Pipeline Complete.")
