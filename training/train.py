@@ -417,7 +417,18 @@ for epoch in range(MAX_EPOCHS):
                         print(f"  💾 Saved best checkpoint: epoch {epoch+1}@{int(val_pct*100)}% (val_loss: {avg_val_loss:.4f})")
                         
                         if USE_WANDB and HAS_WANDB and wandb.run:
+                            # 1. Save as file (legacy, directly available in Files tab)
                             wandb.save(str(checkpoint_path))
+                            
+                            # 2. Log as Artifact (recommended, versioned and easier to find)
+                            artifact = wandb.Artifact(
+                                f"model-{wandb.run.id}", 
+                                type="model", 
+                                description=f"Best model from epoch {epoch+1}"
+                            )
+                            artifact.add_file(str(checkpoint_path), name="best.pt")
+                            wandb.log_artifact(artifact)
+                            
                             wandb.run.summary["best_epoch"] = epoch + 1
                             wandb.run.summary["best_val_loss"] = best_val_loss
                     else:
@@ -522,7 +533,18 @@ for epoch in range(MAX_EPOCHS):
                 print(f"  💾 Saved best checkpoint: epoch {epoch+1} (val_loss: {avg_val_loss:.4f})")
                 
                 if USE_WANDB and HAS_WANDB and wandb.run:
+                    # 1. Save as file
                     wandb.save(str(checkpoint_path))
+                    
+                    # 2. Log as Artifact
+                    artifact = wandb.Artifact(
+                        f"model-{wandb.run.id}", 
+                        type="model", 
+                        description=f"Best model from epoch {epoch+1} (final)"
+                    )
+                    artifact.add_file(str(checkpoint_path), name="best.pt")
+                    wandb.log_artifact(artifact)
+                    
                     wandb.run.summary["best_epoch"] = epoch + 1
                     wandb.run.summary["best_val_loss"] = best_val_loss
             else:
