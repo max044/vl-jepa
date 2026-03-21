@@ -287,6 +287,10 @@ class VLJepa(nn.Module):
             self.logit_scale = nn.Parameter(torch.ones([]) * init_val)
 
     def forward(self, pixel_values, query_ids, query_mask, target_texts):
+        # VL-JEPA training alignment:
+        # Predictor receives (video + caption) -> sy_hat
+        # Y-Encoder receives (caption) -> sy
+        # InfoNCE forces sy_hat to match sy using video features as the bridge.
         sv = self.x_encoder(pixel_values)
         results = self.predictor(sv, query_ids, query_mask)
         sy_hat = results["sy_hat"]

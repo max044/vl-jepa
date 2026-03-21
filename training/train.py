@@ -42,8 +42,9 @@ DATA_DIR = Path("data")
 # ---------------------------------------------------------------------------
 
 # Training - PARAMÈTRES OPTIMISÉS (AutoResearch 2026-03-20)
-BATCH_SIZE = 2  # Optimal (avec grad_accum=2, effective batch=4)
-GRAD_ACCUMULATION = 2  # Effective batch = 4
+# Updated 2026-03-21: Use real query and batch size 16
+BATCH_SIZE = 16  
+GRAD_ACCUMULATION = 1  # Effective batch = 16
 LEARNING_RATE = 3e-4  # Optimal trouvé
 WARMUP_STEPS = 100  # Optimal trouvé
 WEIGHT_DECAY = 0.05  # Optimal trouvé

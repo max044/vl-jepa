@@ -198,10 +198,9 @@ class CharadesSTADataset(Dataset):
         offset_start = (start_sec - load_start) / win_dur
         offset_end = (end_sec - load_start) / win_dur
 
-        # Use a neutral query for training
-        # (VL-JEPA learns to predict the target caption embedding from video + query)
-        query_idx = idx % len(self.NEUTRAL_QUERIES)
-        query = self.NEUTRAL_QUERIES[query_idx]
+        # Use the actual caption as the query for training
+        # This allows the predictor to learn to use the query to steer its prediction
+        query = sample["caption"]
 
         return {
             "frames": frames,           # list of numpy arrays (H, W, 3)
