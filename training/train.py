@@ -393,6 +393,7 @@ for epoch in range(MAX_EPOCHS):
                             "val/loss": avg_val_loss,
                             "val/best": best_val_loss,
                             "epoch": epoch + 1 + val_pct,
+                            "step": step,
                         })
                     
                     # Check if improved
@@ -511,6 +512,7 @@ for epoch in range(MAX_EPOCHS):
                     "val/loss": avg_val_loss,
                     "val/best": best_val_loss,
                     "epoch": epoch + 1,
+                    "step": step,
                 })
             
             # Check if improved
