@@ -213,26 +213,7 @@ scaler = None
 print(f"\nFull training: {MAX_EPOCHS} epochs")
 print(f"Starting training...\n")
 
-# W&B
-if USE_WANDB and HAS_WANDB:
-    run_name = f"full_lr{LEARNING_RATE}_temp{TEMPERATURE}_bs{BATCH_SIZE}_ep{MAX_EPOCHS}"
-    tags = [
-        "full_training",
-        f"lr_{LEARNING_RATE}",
-        f"temp_{TEMPERATURE}",
-        f"batch_{BATCH_SIZE}",
-        f"epochs_{MAX_EPOCHS}",
-    ]
-    
-    wandb.init(
-        project=WANDB_PROJECT,
-        entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
-        config=asdict(config),
-        name=run_name,
-        tags=tags,
-    )
-    # Define default step metric
-    wandb.define_metric("*", step_metric="step")
+# W&B init moved after checkpoint loading to capture resume_wandb_id
 
 # ---------------------------------------------------------------------------
 # Training loop
@@ -246,11 +227,10 @@ def cleanup_wandb_cache():
     """Vider le cache WandB pour libérer de l'espace disque."""
     import shutil
     import os
-    # 1. Manually remove staging and artifacts from local share
+    # 1. Manually remove artifacts from local share (DO NOT remove staging as it breaks active wandb-core sync)
     cache_dirs = [
         Path("/root/.cache/wandb/artifacts"),
         Path("/root/.local/share/wandb/artifacts"),
-        Path("/root/.local/share/wandb/staging"),
     ]
     for d in cache_dirs:
         if d.exists():
@@ -292,11 +272,33 @@ if RESUME_CHECKPOINT.exists():
         start_epoch = ckpt.get('epoch', 0)
         step = ckpt.get('step', 0)
         best_val_loss = ckpt.get('best_val_loss', ckpt.get('val_loss', float('inf')))
+        resume_wandb_id = ckpt.get('wandb_id', None)
         
         print(f"  ✓ Resumed from epoch {start_epoch}, step {step} (best val: {best_val_loss:.4f})")
     except Exception as e:
         print(f"  ⚠️  Failed to resume from checkpoint: {e}")
         print("     Starting from scratch.")
+
+# W&B
+if USE_WANDB and HAS_WANDB:
+    tags = [
+        "full_training",
+        f"lr_{LEARNING_RATE}",
+        f"temp_{TEMPERATURE}",
+        f"batch_{BATCH_SIZE}",
+        f"epochs_{MAX_EPOCHS}",
+    ]
+    
+    wandb.init(
+        project=WANDB_PROJECT,
+        entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
+        config=asdict(config),
+        tags=tags,
+        id=resume_wandb_id,
+        resume="allow" if resume_wandb_id else None,
+    )
+    # Define default step metric
+    wandb.define_metric("*", step_metric="step")
 
 t_start_training = time.time()
 
@@ -472,6 +474,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                                 'val_loss': avg_val_loss,
                                 'best_val_loss': best_val_loss,
                                 'config': asdict(config),
+                                'wandb_id': wandb.run.id if (USE_WANDB and HAS_WANDB and wandb.run) else None,
                             }, temp_path)
                             os.replace(temp_path, checkpoint_path)
                             print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1}@{int(val_pct*100)}% (val_loss: {avg_val_loss:.4f})")
@@ -586,6 +589,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                         'val_loss': avg_val_loss,
                         'best_val_loss': best_val_loss,
                         'config': asdict(config),
+                        'wandb_id': wandb.run.id if (USE_WANDB and HAS_WANDB and wandb.run) else None,
                     }, temp_path)
                     os.replace(temp_path, checkpoint_path)
                     print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1} (val_loss: {avg_val_loss:.4f})")
@@ -627,6 +631,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                     'val_loss': avg_val_loss,
                     'best_val_loss': best_val_loss,
                     'config': asdict(config),
+                    'wandb_id': wandb.run.id if (USE_WANDB and HAS_WANDB and wandb.run) else None,
                 }, temp_last_path)
                 os.replace(temp_last_path, last_checkpoint_path)
             except Exception as e:
