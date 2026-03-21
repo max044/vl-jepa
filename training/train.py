@@ -34,6 +34,11 @@ from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
 from vljepa.losses import vl_jepa_loss, SIGReg
 
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--no-sigreg", action="store_true", help="Disable SIGReg regularization")
+args, unknown = parser.parse_known_args()
+
 DATA_DIR = Path("data")
 
 # ---------------------------------------------------------------------------
@@ -54,7 +59,7 @@ VAL_FREQUENCY = 0.25  # Valider à 25%, 50%, 75%, 100% de chaque époque
 
 # Loss
 TEMPERATURE = 0.025  # Optimal trouvé
-SIGREG_WEIGHT = 0.05  # Optimal trouvé
+SIGREG_WEIGHT = 0.0 if args.no_sigreg else 0.05  # Optimal trouvé
 
 # Model
 PREDICTOR_LAYERS = 0  # 0 = use all layers
