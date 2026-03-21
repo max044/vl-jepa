@@ -91,7 +91,6 @@ class XEncoder(nn.Module):
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(self.config.dtype, torch.float32)
         
         t = torch.tensor(video_frames, dtype=dtype, device=device)
-        t = t[..., [2, 1, 0]]  # BGR to RGB
         t = t.permute(0, 3, 1, 2) / 255.0
         t = F.interpolate(t, size=(224, 224), mode='bilinear', align_corners=False)
         
