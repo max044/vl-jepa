@@ -436,32 +436,24 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                         checkpoint_dir.mkdir(exist_ok=True)
                         checkpoint_path = checkpoint_dir / "best.pt"
                         temp_path = checkpoint_dir / "best.pt.tmp"
-                        torch.save({
-                            'epoch': epoch + 1,
-                            'step': step,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'val_loss': avg_val_loss,
-                            'best_val_loss': best_val_loss,
-                            'config': asdict(config),
-                        }, temp_path)
-                        os.replace(temp_path, checkpoint_path)
-                        
-                        print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1}@{int(val_pct*100)}% (val_loss: {avg_val_loss:.4f})")
+                        try:
+                            torch.save({
+                                'epoch': epoch + 1,
+                                'step': step,
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': optimizer.state_dict(),
+                                'val_loss': avg_val_loss,
+                                'best_val_loss': best_val_loss,
+                                'config': asdict(config),
+                            }, temp_path)
+                            os.replace(temp_path, checkpoint_path)
+                            print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1}@{int(val_pct*100)}% (val_loss: {avg_val_loss:.4f})")
+                        except Exception as e:
+                            print(f"  ⚠️  Failed to save checkpoint: {e}")
                         
                         if USE_WANDB and HAS_WANDB and wandb.run:
-                            # 1. Save as file (legacy, directly available in Files tab)
-                            wandb.save(str(checkpoint_path))
-                            
-                            # 2. Log as Artifact (recommended, versioned and easier to find)
-                            artifact = wandb.Artifact(
-                                f"model-{wandb.run.id}", 
-                                type="model", 
-                                description=f"Best model from epoch {epoch+1}"
-                            )
-                            artifact.add_file(str(checkpoint_path), name="best.pt")
-                            wandb.log_artifact(artifact)
-                            
+                            # wandb.save(str(checkpoint_path)) # DISBLED for disk space
+                            # wandb.log_artifact(artifact) # DISBLED for disk space
                             wandb.run.summary["best_epoch"] = epoch + 1
                             wandb.run.summary["best_val_loss"] = best_val_loss
                     else:
@@ -549,37 +541,24 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                 best_epoch = epoch + 1
                 epochs_no_improve = 0
                 
-                # Save best checkpoint (safely)
-                checkpoint_dir = Path("checkpoints")
-                checkpoint_dir.mkdir(exist_ok=True)
-                checkpoint_path = checkpoint_dir / "best.pt"
-                temp_path = checkpoint_dir / "best.pt.tmp"
-                torch.save({
-                    'epoch': epoch + 1,
-                    'step': step,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': avg_val_loss,
-                    'best_val_loss': best_val_loss,
-                    'config': asdict(config),
-                }, temp_path)
-                os.replace(temp_path, checkpoint_path)
-                
-                print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1} (val_loss: {avg_val_loss:.4f})")
+                try:
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'step': step,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'val_loss': avg_val_loss,
+                        'best_val_loss': best_val_loss,
+                        'config': asdict(config),
+                    }, temp_path)
+                    os.replace(temp_path, checkpoint_path)
+                    print(f"  💾 Saved best checkpoint (atomic): epoch {epoch+1} (val_loss: {avg_val_loss:.4f})")
+                except Exception as e:
+                    print(f"  ⚠️  Failed to save best checkpoint: {e}")
                 
                 if USE_WANDB and HAS_WANDB and wandb.run:
-                    # 1. Save as file
-                    wandb.save(str(checkpoint_path))
-                    
-                    # 2. Log as Artifact
-                    artifact = wandb.Artifact(
-                        f"model-{wandb.run.id}", 
-                        type="model", 
-                        description=f"Best model from epoch {epoch+1} (final)"
-                    )
-                    artifact.add_file(str(checkpoint_path), name="best.pt")
-                    wandb.log_artifact(artifact)
-                    
+                    # wandb.save(str(checkpoint_path)) # DISABLED
+                    # wandb.log_artifact(artifact) # DISABLED
                     wandb.run.summary["best_epoch"] = epoch + 1
                     wandb.run.summary["best_val_loss"] = best_val_loss
             else:
@@ -591,21 +570,24 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                     print(f"\n🛑 Early stopping triggered! Best epoch: {best_epoch} (val_loss: {best_val_loss:.4f})")
                     break
             
-            # Always save last checkpoint (safely)
-            checkpoint_dir = Path("checkpoints")
-            checkpoint_dir.mkdir(exist_ok=True)
-            last_checkpoint_path = checkpoint_dir / "last.pt"
-            temp_last_path = checkpoint_dir / "last.pt.tmp"
-            torch.save({
-                'epoch': epoch + 1,
-                'step': step,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': avg_val_loss,
-                'best_val_loss': best_val_loss,
-                'config': asdict(config),
-            }, temp_last_path)
-            os.replace(temp_last_path, last_checkpoint_path)
+            try:
+                # Always save last checkpoint (safely)
+                checkpoint_dir = Path("checkpoints")
+                checkpoint_dir.mkdir(exist_ok=True)
+                last_checkpoint_path = checkpoint_dir / "last.pt"
+                temp_last_path = checkpoint_dir / "last.pt.tmp"
+                torch.save({
+                    'epoch': epoch + 1,
+                    'step': step,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': avg_val_loss,
+                    'best_val_loss': best_val_loss,
+                    'config': asdict(config),
+                }, temp_last_path)
+                os.replace(temp_last_path, last_checkpoint_path)
+            except Exception as e:
+                print(f"  ⚠️  Failed to save last checkpoint: {e}")
 
 print()  # newline
 
