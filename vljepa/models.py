@@ -24,6 +24,7 @@ class XEncoder(nn.Module):
 
     def __init__(self, config: Config):
         super().__init__()
+        self.config = config
         try:
             self.model = AutoModel.from_pretrained(config.clip_model, trust_remote_code=True)
         except Exception:
