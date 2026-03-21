@@ -91,7 +91,7 @@ def main():
 
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
-        entity = os.getenv("WANDB_ENTITY", "maxence-cabiddu")
+        entity = os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu")
         if args.wandb_run_path:
             wandb.init(project=args.wandb_project, entity=entity, id=args.wandb_run_path.split("/")[-1], resume="allow", tags=["eval"])
         else:

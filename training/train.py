@@ -226,7 +226,7 @@ if USE_WANDB and HAS_WANDB:
     
     wandb.init(
         project=WANDB_PROJECT,
-        entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu"),
+        entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
         config=asdict(config),
         name=run_name,
         tags=tags,
