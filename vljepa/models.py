@@ -138,6 +138,17 @@ class Predictor(nn.Module):
         # Pour Qwen3.5-0.8B (ForCausalLM) : full_model.model
         self.text_model = full_model.model  # Qwen3_5TextModel
         
+        if config.use_lora:
+            from peft import LoraConfig, get_peft_model
+            lora_config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                lora_dropout=0.05,
+                bias="none",
+            )
+            self.text_model = get_peft_model(self.text_model, lora_config)
+        
         # Garder seulement les N dernières layers si besoin
         if config.predictor_layers > 0:
             n = len(self.text_model.layers)
@@ -219,6 +230,10 @@ class YEncoder(nn.Module):
         model_config = AutoConfig.from_pretrained(config.text_model, trust_remote_code=True)
         text_hidden = getattr(model_config, 'hidden_size', 1024)
         
+        # Geler le modèle textuel de base (seule la projection sera entraînable)
+        for p in self.model.parameters():
+            p.requires_grad = False
+            
         self.projection = nn.Linear(text_hidden, config.embed_dim)
         
         

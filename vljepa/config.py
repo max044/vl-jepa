@@ -19,7 +19,7 @@ class Config:
     # Predictor: Qwen 3.5 0.8B (full fine-tune, no LoRA) - based on VL-JEPA paper
     # Using Qwen3.5-0.8B as it's newer and closer to Llama-3.2-1B in size
     predictor_model: str = "Qwen/Qwen3.5-0.8B"
-    use_lora: bool = False  # No LoRA - full fine-tune as per paper
+    use_lora: bool = True  # Enable LoRA adaptation to constrain trainable bounds to ~20M parameters
     predictor_layers: int = 0  # 0 = use all layers (8 = last 8 layers, not working yet)
     use_bidirectional_attention: bool = True  # Disable causal mask as per paper
 
