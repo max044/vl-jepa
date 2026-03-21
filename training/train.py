@@ -242,6 +242,21 @@ if USE_WANDB and HAS_WANDB:
 # Training state & Resume Logic
 # ---------------------------------------------------------------------------
 
+def cleanup_wandb_cache():
+    """Vider le cache WandB pour libérer de l'espace disque."""
+    import shutil
+    cache_dirs = [
+        Path("/root/.cache/wandb/artifacts"),
+        Path("/root/.local/share/wandb/artifacts"),
+        Path("/root/.local/share/wandb/staging"),
+    ]
+    for d in cache_dirs:
+        if d.exists():
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+
 best_val_loss = float('inf')
 best_epoch = 0
 epochs_no_improve = 0
@@ -373,6 +388,9 @@ for epoch in range(start_epoch, MAX_EPOCHS):
         val_checkpoints = [VAL_FREQUENCY * (i+1) for i in range(int(1/VAL_FREQUENCY))]
         for val_pct in val_checkpoints:
             if batch_idx == int(len(train_loader) * val_pct) - 1:
+                # Préserver l'espace disque
+                cleanup_wandb_cache()
+                
                 print(f"\n\n📊 Validation à {int(val_pct*100)}% de l'époque {epoch+1}...")
                 
                 model.eval()
@@ -485,6 +503,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
     
     # Validation finale à la fin de l'époque (si pas déjà fait à 100%)
     if VAL_FREQUENCY < 1.0:
+        cleanup_wandb_cache()
         model.eval()
         val_loss = 0.0
         val_infonce = 0.0
