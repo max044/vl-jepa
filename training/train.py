@@ -246,11 +246,10 @@ def cleanup_wandb_cache():
     """Vider le cache WandB pour libérer de l'espace disque."""
     import shutil
     import os
-    # 1. Manually remove staging and artifacts from local share
+    # 1. Manually remove artifacts cache but DO NOT delete staging (otherwise async uploads fail!)
     cache_dirs = [
         Path("/root/.cache/wandb/artifacts"),
         Path("/root/.local/share/wandb/artifacts"),
-        Path("/root/.local/share/wandb/staging"),
     ]
     for d in cache_dirs:
         if d.exists():
@@ -519,7 +518,8 @@ for epoch in range(start_epoch, MAX_EPOCHS):
     total_training_time += dt
     
     # Validation finale à la fin de l'époque (si pas déjà fait à 100%)
-    if VAL_FREQUENCY < 1.0:
+    val_checkpoints = [VAL_FREQUENCY * (i+1) for i in range(int(1/VAL_FREQUENCY))]
+    if 1.0 not in val_checkpoints:
         cleanup_wandb_cache()
         model.eval()
         val_loss = 0.0
