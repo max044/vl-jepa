@@ -315,7 +315,7 @@ for epoch in range(MAX_EPOCHS):
         num_batches += 1
         
         # Log to W&B every 100 steps (~0.1% of training)
-        if USE_WANDB and HAS_WANDB and wandb.run and (step % 100 == 0 or step < 5):
+        if USE_WANDB and HAS_WANDB and wandb.run and (step % 10 == 0 or step < 10):
             wandb.log({
                 "train/loss": train_loss,
                 "train/infonce": loss_dict["loss/infonce"],
