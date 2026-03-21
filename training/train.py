@@ -249,6 +249,7 @@ def cleanup_wandb_cache():
 best_val_loss = float('inf')
 best_epoch = 0
 epochs_no_improve = 0
+resume_wandb_id = None
 total_training_time = 0
 step = 0
 start_epoch = 0
