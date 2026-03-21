@@ -231,6 +231,8 @@ if USE_WANDB and HAS_WANDB:
         tags=tags,
         reinit=True,
     )
+    # Define default step metric
+    wandb.define_metric("*", step_metric="step")
 
 # ---------------------------------------------------------------------------
 # Training loop
@@ -343,7 +345,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
         epoch_infonce += loss_dict["loss/infonce"]
         num_batches += 1
         
-        # Log to W&B every 100 steps (~0.1% of training)
+        # Log to W&B every 10 steps
         if USE_WANDB and HAS_WANDB and wandb.run and (step % 10 == 0 or step < 10):
             wandb.log({
                 "train/loss": train_loss,
@@ -351,8 +353,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                 "train/sigreg": loss_dict.get("loss/sigreg", 0),
                 "train/lr": optimizer.param_groups[0]["lr"],
                 "train/epoch": epoch + batch_idx / len(train_loader),
-                "step": step,
-            })
+            }, step=step)
         
         # Smooth loss for display
         ema_beta = 0.9
@@ -422,8 +423,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                             "val/loss": avg_val_loss,
                             "val/best": best_val_loss,
                             "epoch": epoch + 1 + val_pct,
-                            "step": step,
-                        })
+                        }, step=step)
                     
                     # Check if improved
                     if avg_val_loss < best_val_loss:
@@ -541,8 +541,7 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                     "val/loss": avg_val_loss,
                     "val/best": best_val_loss,
                     "epoch": epoch + 1,
-                    "step": step,
-                })
+                }, step=step)
             
             # Check if improved
             if avg_val_loss < best_val_loss:
