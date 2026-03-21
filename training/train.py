@@ -236,18 +236,47 @@ if USE_WANDB and HAS_WANDB:
 # Training loop
 # ---------------------------------------------------------------------------
 
-t_start_training = time.time()
+# ---------------------------------------------------------------------------
+# Training state & Resume Logic
+# ---------------------------------------------------------------------------
+
 best_val_loss = float('inf')
 best_epoch = 0
 epochs_no_improve = 0
 total_training_time = 0
 step = 0
-epoch = 0
+start_epoch = 0
 smooth_train_loss = 0
+
+RESUME_CHECKPOINT = Path("checkpoints") / "best.pt"
+if RESUME_CHECKPOINT.exists():
+    print(f"📂 Detected checkpoint: {RESUME_CHECKPOINT}")
+    try:
+        # Load on CPU first to avoid VRAM spike
+        ckpt = torch.load(RESUME_CHECKPOINT, map_location='cpu', weights_only=False)
+        
+        # Load model weights
+        model.load_state_dict(ckpt['model_state_dict'])
+        
+        # Load optimizer state
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        
+        # Restore training state
+        start_epoch = ckpt.get('epoch', 0)
+        step = ckpt.get('step', 0)
+        best_val_loss = ckpt.get('best_val_loss', ckpt.get('val_loss', float('inf')))
+        
+        print(f"  ✓ Resumed from epoch {start_epoch}, step {step} (best val: {best_val_loss:.4f})")
+    except Exception as e:
+        print(f"  ⚠️  Failed to resume from checkpoint: {e}")
+        print("     Starting from scratch.")
+
+t_start_training = time.time()
 
 print(f"\nTraining with early stopping (patience={PATIENCE})")
 
-for epoch in range(MAX_EPOCHS):
+for epoch in range(start_epoch, MAX_EPOCHS):
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     t0 = time.time()
     
