@@ -245,6 +245,8 @@ if USE_WANDB and HAS_WANDB:
 def cleanup_wandb_cache():
     """Vider le cache WandB pour libérer de l'espace disque."""
     import shutil
+    import os
+    # 1. Manually remove staging and artifacts from local share
     cache_dirs = [
         Path("/root/.cache/wandb/artifacts"),
         Path("/root/.local/share/wandb/artifacts"),
@@ -256,6 +258,13 @@ def cleanup_wandb_cache():
                 shutil.rmtree(d, ignore_errors=True)
             except Exception:
                 pass
+    
+    # 2. Use W&B CLI cleanup for safe maintenance (prune everything over 1GB)
+    if HAS_WANDB:
+        try:
+            os.system("wandb artifact cache cleanup --bytes 1GB > /dev/null 2>&1")
+        except:
+            pass
 
 best_val_loss = float('inf')
 best_epoch = 0
@@ -470,8 +479,16 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                             print(f"  ⚠️  Failed to save checkpoint: {e}")
                         
                         if USE_WANDB and HAS_WANDB and wandb.run:
-                            # wandb.save(str(checkpoint_path)) # DISBLED for disk space
-                            # wandb.log_artifact(artifact) # DISBLED for disk space
+                            # Log as Artifact (recommended, versioned and easier to find)
+                            # This will consume space for staging, but cleanup_wandb_cache will clear it at NEXT validation
+                            artifact = wandb.Artifact(
+                                f"model-{wandb.run.id}", 
+                                type="model", 
+                                description=f"Best model from epoch {epoch+1}@{int(val_pct*100)}%"
+                            )
+                            artifact.add_file(str(checkpoint_path), name="best.pt")
+                            wandb.log_artifact(artifact)
+                            
                             wandb.run.summary["best_epoch"] = epoch + 1
                             wandb.run.summary["best_val_loss"] = best_val_loss
                     else:
@@ -576,8 +593,15 @@ for epoch in range(start_epoch, MAX_EPOCHS):
                     print(f"  ⚠️  Failed to save best checkpoint: {e}")
                 
                 if USE_WANDB and HAS_WANDB and wandb.run:
-                    # wandb.save(str(checkpoint_path)) # DISABLED
-                    # wandb.log_artifact(artifact) # DISABLED
+                    # Log as Artifact (final for this epoch)
+                    artifact = wandb.Artifact(
+                        f"model-{wandb.run.id}", 
+                        type="model", 
+                        description=f"Best model from epoch {epoch+1} (final for epoch)"
+                    )
+                    artifact.add_file(str(checkpoint_path), name="best.pt")
+                    wandb.log_artifact(artifact)
+                    
                     wandb.run.summary["best_epoch"] = epoch + 1
                     wandb.run.summary["best_val_loss"] = best_val_loss
             else:
