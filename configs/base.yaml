@@ -4,7 +4,7 @@
 # Model
 clip_model: "facebook/vjepa2-vitl-fpc64-256"
 predictor_model: "Qwen/Qwen3.5-0.8B"
-use_lora: false
+use_lora: true
 predictor_layers: 0
 text_model: "Qwen/Qwen3-Embedding-0.6B"
 
@@ -19,15 +19,15 @@ num_frames: 16
 frame_size: 224
 
 # Training
-batch_size: 2
-grad_accumulation: 2
-lr: 0.0001
+batch_size: 16
+grad_accumulation: 1
+lr: 0.0003
 weight_decay: 0.05
 epochs: 20
-warmup_steps: 500
+warmup_steps: 100
 grad_clip: 1.0
-temperature: 0.07
-sigreg_weight: 0.1
+temperature: 0.025
+sigreg_weight: 0.05
 y_encoder_lr_multiplier: 0.05
 dtype: "fp32"
 
@@ -47,12 +47,12 @@ val_split: 0.1
 checkpoint_dir: "./checkpoints"
 save_every: 2
 val_every: 2
-val_samples: 100
+val_samples: 500
 early_stopping_patience: 5
 
 # Inference
-window_sizes: [2.0, 4.0, 8.0, 16.0]
-window_stride: 1.0
+window_sizes: [4.0, 8.0, 16.0]
+window_stride: 2.0
 nms_threshold: 0.5
 inference_batch_size: 32
 top_k: 5

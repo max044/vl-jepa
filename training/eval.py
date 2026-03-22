@@ -97,9 +97,6 @@ def main():
         else:
             wandb.init(project=args.wandb_project, entity=entity, config=config.__dict__, job_type="eval", tags=["eval"])
 
-    # Load model & move to device (keep fp32 for compatibility)
-    model = VLJepa(config).to(config.device)
-    
     checkpoint_path = args.checkpoint
     if ":" in checkpoint_path and not os.path.exists(checkpoint_path):
         if use_wandb:
@@ -124,8 +121,19 @@ def main():
         return
 
     print(f"📂 Loading weights from: {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=config.device, weights_only=True)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False) # Load to CPU first to parse config
     
+    # Handle config in checkpoint
+    if "config" in ckpt:
+        print("  ✓ Found config in checkpoint, updating current config...")
+        ckpt_config = ckpt["config"]
+        for k, v in ckpt_config.items():
+            if hasattr(config, k):
+                setattr(config, k, v)
+    
+    # Initialize model with correct config
+    model = VLJepa(config).to(config.device)
+
     # Handle different checkpoint formats
     if "model_state_dict" in ckpt:
         # Full model state dict format (from training/train.py)
