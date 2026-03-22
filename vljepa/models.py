@@ -118,6 +118,19 @@ class QueryEncoder(nn.Module):
             max_length=512
         ).to(device)
 
+class RegressionHead(nn.Module):
+    """Small MLP to predict [start_offset, end_offset] relative to window."""
+    def __init__(self, input_dim: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(input_dim // 2, 2) # [start, end]
+        )
+    
+    def forward(self, x):
+        return self.mlp(x)
 
 class Predictor(nn.Module):
     def __init__(self, config: Config):
@@ -157,6 +170,9 @@ class Predictor(nn.Module):
         hidden_size = self.text_model.config.hidden_size
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
+        
+        if config.use_regression:
+            self.regression_head = RegressionHead(hidden_size)
         
         # Regression head for direct start/end prediction
         if config.use_regression:
@@ -336,6 +352,12 @@ class VLJepa(nn.Module):
         if hasattr(self, "logit_scale"):
             params.append(self.logit_scale)
         return params
+
+    def trainable_parameters_regression(self):
+        """Only the regression head parameters."""
+        if hasattr(self.predictor, "regression_head"):
+            return list(self.predictor.regression_head.parameters())
+        return []
     
     def trainable_parameters_y_encoder(self):
         """Y-Encoder parameters for separate LR."""
