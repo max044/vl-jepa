@@ -141,14 +141,24 @@ def main():
     model = VLJepa(config).to(config.device)
 
     # 2nd Pass: Allow base.yaml/CLI to override inference-specific params (for speed/stride)
+    # Priority: CLI > base.yaml > Checkpoint
+    inference_params = ["window_sizes", "window_stride", "nms_threshold", "inference_batch_size"]
+    
+    # 1. From base.yaml
     if os.path.exists(base_config_path):
         with open(base_config_path, "r") as f:
             yaml_config = yaml.safe_load(f)
-            # Only override inference/data params, not model architecture
-            inference_params = ["window_sizes", "window_stride", "nms_threshold", "inference_batch_size"]
             for k in inference_params:
                 if k in yaml_config and hasattr(config, k):
                     setattr(config, k, yaml_config[k])
+    
+    # 2. From CLI (Highest Priority)
+    if args.window_stride:
+        config.window_stride = args.window_stride
+    if args.window_sizes:
+        config.window_sizes = [float(x.strip()) for x in args.window_sizes.split(",")]
+    if args.device:
+        config.device = args.device
 
     # Handle different checkpoint formats
     if "model_state_dict" in ckpt:
