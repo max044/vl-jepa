@@ -55,7 +55,7 @@ class XEncoder(nn.Module):
     @torch.no_grad()
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Return mean-pooled video embedding (B, x_dim)."""
-        pixel_values = pixel_values.to(self.model.device)
+        pixel_values = pixel_values.to(self.model.device, dtype=next(self.model.parameters()).dtype)
         if pixel_values.shape[1] == 3 and pixel_values.shape[2] > 3:
             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
         outputs = self.model(pixel_values_videos=pixel_values)
@@ -111,9 +111,9 @@ class XEncoder(nn.Module):
 # Predictor — last 8 layers of Llama-3.2-1B, bidirectional + LoRA
 # ---------------------------------------------------------------------------
 
-def _make_bidirectional_mask(attention_mask: torch.Tensor, dtype=torch.float32) -> torch.Tensor:
+def _make_bidirectional_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     """(B, T) padding mask -> (B, 1, 1, T) additive mask. PAD=-inf, real=0."""
-    mask = attention_mask[:, None, None, :].to(dtype)
+    mask = attention_mask[:, None, None, :].float() 
     return (1.0 - mask) * torch.finfo(torch.float32).min
 
 
@@ -244,7 +244,7 @@ class Predictor(nn.Module):
         hidden = out.last_hidden_state  # (B, 1+T, hidden)
 
         # Average pooling on non-PAD tokens (paper Section 3.1)
-        mask_exp = combined_mask.unsqueeze(-1).float()
+        mask_exp = combined_mask.unsqueeze(-1).to(dtype=hidden.dtype)
         pooled   = (hidden * mask_exp).sum(dim=1) / mask_exp.sum(dim=1).clamp(min=1e-6)
 
         return {"sy_hat": self.output_proj(pooled)}
@@ -274,12 +274,13 @@ class YEncoder(nn.Module):
         from sentence_transformers import SentenceTransformer
 
         print("  Loading EmbeddingGemma-300M (SentenceTransformer)...")
-        st = SentenceTransformer(GEMMA_EMBED_MODEL)
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(config.dtype, torch.float32)
+        st = SentenceTransformer(GEMMA_EMBED_MODEL, model_kwargs={"torch_dtype": dtype})
 
         # st pipeline: [0] Transformer, [1] Pooling, [2] Dense, [3] Dense, [4] Normalize
         # We keep [0-3] and add our own projection instead of [4]
         self.st_modules = nn.ModuleList([st[i] for i in range(4)])
-        self.projection = nn.Linear(self.GEMMA_OUT_DIM, EMBED_DIM)
+        self.projection = nn.Linear(self.GEMMA_OUT_DIM, EMBED_DIM).to(dtype)
 
         self.to(config.device)
 
@@ -365,7 +366,7 @@ class VLJepa(nn.Module):
             self.logit_scale = nn.Parameter(torch.ones([]) * init_val)
 
     def forward(self, pixel_values, query_ids, query_mask, target_texts) -> dict:
-        device = str(pixel_values.device)
+        device = pixel_values.device
         sv     = self.x_encoder(pixel_values)
         result = self.predictor(sv, query_ids, query_mask)
         sy     = self.y_encoder(target_texts, device=device)
