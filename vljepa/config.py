@@ -34,7 +34,7 @@ class Config:
     frame_size: int = 224     # V-JEPA input resolution
 
     # ── Training ─────────────────────────────────────────────────────────
-    batch_size: int = 2
+    batch_size: int = 16
     grad_accumulation: int = 1
     lr: float = 3e-4
     weight_decay: float = 0.05

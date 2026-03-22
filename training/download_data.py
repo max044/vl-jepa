@@ -9,7 +9,6 @@ Usage:
     uv run training/download_data.py --verify-only
 """
 
-import os
 import sys
 import subprocess
 from pathlib import Path
@@ -21,6 +20,7 @@ import argparse
 
 DATA_DIR  = Path("data")
 VIDEO_DIR = DATA_DIR / "Charades_v1_480"
+ANNO_DIR  = DATA_DIR / "Charades_v1_480"
 
 HF_BUCKET_ID    = "max044/charades-sta-storage"
 ANNO_FILES      = ["charades_sta_train.txt", "charades_sta_test.txt"]
@@ -62,7 +62,7 @@ def verify():
     ok = True
 
     for fname in ANNO_FILES:
-        fpath = DATA_DIR / fname
+        fpath = ANNO_DIR / fname
         if fpath.exists():
             n_lines = sum(1 for line in fpath.open() if line.strip())
             print(f"  ✓ {fname} ({n_lines} annotations)")
