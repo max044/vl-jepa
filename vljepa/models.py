@@ -27,10 +27,10 @@ class XEncoder(nn.Module):
         self.config = config
         try:
             self.model = AutoModel.from_pretrained(config.clip_model, trust_remote_code=True)
-        except Exception:
-            print(f"Warning: Failed to load {config.clip_model}. Trying fallback 'facebook/vjepa-vit-h-14-224'.")
+        except Exception as e:
+            print(f"Warning: Failed to load {config.clip_model}: {e}")
+            # Do NOT mutate config.x_dim anymore to avoid breaking Predictor
             self.model = AutoModel.from_pretrained("facebook/vjepa-vit-h-14-224", trust_remote_code=True)
-            config.x_dim = self.model.config.hidden_size
 
         for p in self.model.parameters():
             p.requires_grad = False
@@ -168,7 +168,9 @@ class Predictor(nn.Module):
             self.text_model.layers = self.text_model.layers[n - config.predictor_layers:]
         
         hidden_size = self.text_model.config.hidden_size
+        print(f"  [Predictor] hidden_size: {hidden_size}, x_dim: {config.x_dim}")
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
+        print(f"  [Predictor] visual_proj shape: {self.visual_proj.weight.shape}")
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
         
         if config.use_regression:
