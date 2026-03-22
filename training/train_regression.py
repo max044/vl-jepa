@@ -118,7 +118,7 @@ def train():
             optimizer.zero_grad()
             
             # Forward
-            pixel_values = torch.stack([torch.from_numpy(f).permute(0, 3, 1, 2).float() / 255.0 for f in batch["frames"]]).to(device)
+            pixel_values = torch.stack([torch.from_numpy(np.array(f)).permute(0, 3, 1, 2).float() / 255.0 for f in batch["frames"]]).to(device)
             # Tokenize and move to device
             tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
             
@@ -142,7 +142,7 @@ def train():
         with torch.no_grad():
             for batch in val_loader:
                 if batch is None: continue
-                pixel_values = torch.stack([torch.from_numpy(f).permute(0, 3, 1, 2).float() / 255.0 for f in batch["frames"]]).to(device)
+                pixel_values = torch.stack([torch.from_numpy(np.array(batch["frames"][i])).permute(0, 3, 1, 2).float() / 255.0 for i in range(len(batch["frames"]))]).to(device)
                 tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
                 results = model.predictor(model.x_encoder(pixel_values), tokens.input_ids, tokens.attention_mask)
                 loss = criterion(results["offsets"], torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device))
