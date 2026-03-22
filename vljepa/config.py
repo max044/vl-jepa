@@ -34,17 +34,17 @@ class Config:
     frame_size: int = 224     # V-JEPA input resolution
 
     # ── Training ─────────────────────────────────────────────────────────
-    batch_size: int = 16
+    batch_size: int = 64
     grad_accumulation: int = 1
     lr: float = 3e-4
     weight_decay: float = 0.05
     epochs: int = 20
-    warmup_steps: int = 100
+    warmup_steps: int = 500
     grad_clip: float = 1.0
     dtype: str = "bf16"
 
     # Loss
-    temperature: float = 0.025
+    temperature: float = 0.07
     sigreg_weight: float = 0.05
 
     # ── Data ────────────────────────────────────────────────
@@ -64,8 +64,8 @@ class Config:
     save_every: int = 2  # save checkpoint every N epochs
     val_every: int = 2   # run validation every N epochs
     val_samples: int = 500  # limit validation samples for speed
-    early_stopping_patience: int = 5  # Stop if no validation improvement for N epochs (-1 to disable)
-    val_frequency: float = 0.25  # Validate at 25%, 50%, 75%, 100% of each epoch
+    early_stopping_patience: int = 10  # Stop if no validation improvement for N epochs (-1 to disable)
+    val_frequency: float = 0.5  # Validate at 25%, 50%, 75%, 100% of each epoch
 
     # ── Inference ───────────────────────────────────────────
     window_sizes: list[float] = field(default_factory=lambda: [4.0, 8.0, 16.0])
@@ -86,7 +86,10 @@ class Config:
     debug: bool = False
     debug_samples: int = 100
 
-    num_workers: int = 4
+    num_workers: int = 16
+    pin_memory=True
+    prefetch_factor = 2  # précharger 2 batches en avance par worker
+    persistent_workers = True  # évite de re-spawner les workers à chaque époque
 
     def auto_detect(self):
         """Auto-detect device if empty."""

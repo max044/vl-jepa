@@ -1,6 +1,9 @@
 """
 VL-JEPA Training Script
 Usage: uv run training/train.py
+
+nohup uv run training/train.py > logs/train.log 2>&1 &
+echo $!  # noter le PID
 """
 
 import os
@@ -146,9 +149,15 @@ train_subset = Subset(train_dataset, train_indices)
 val_subset   = Subset(train_dataset, val_indices)
 
 train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True,
-                          num_workers=config.num_workers, collate_fn=collate_fn, pin_memory=True)
+                          num_workers=config.num_workers, collate_fn=collate_fn,
+                          pin_memory=config.pin_memory,
+                          prefetch_factor=config.prefetch_factor,
+                          persistent_workers=config.persistent_workers)
 val_loader   = DataLoader(val_subset,   batch_size=config.batch_size, shuffle=False,
-                          num_workers=config.num_workers, collate_fn=collate_fn, pin_memory=True)
+                          num_workers=config.num_workers, collate_fn=collate_fn,
+                          pin_memory=config.pin_memory,
+                          prefetch_factor=config.prefetch_factor,
+                          persistent_workers=config.persistent_workers)
 
 print(f"Dataset: {len(train_subset)} train / {len(val_subset)} val (split by video_id)")
 print(f"Batches: {len(train_loader)}/epoch")
