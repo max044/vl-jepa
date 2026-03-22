@@ -83,7 +83,7 @@ class Config:
     query_max_length: int = 512  # Max query tokens (as per paper)
 
     # ── Debug ───────────────────────────────────────────────
-    debug: bool = True
+    debug: bool = False
     debug_samples: int = 100
 
     num_workers: int = 4
