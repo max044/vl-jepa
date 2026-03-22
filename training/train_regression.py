@@ -123,7 +123,10 @@ def train():
             # Tokenize and move to device
             tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
             
-            results = model.predictor(pixel_values, tokens.input_ids, tokens.attention_mask)
+            with torch.no_grad():
+                sv = model.x_encoder(pixel_values)
+            
+            results = model.predictor(sv, tokens.input_ids, tokens.attention_mask)
             
             pred_offsets = results.get("offsets") # (B, 2)
             gt_offsets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device)
@@ -145,7 +148,8 @@ def train():
                 if batch is None: continue
                 pixel_values = model.x_encoder.preprocess_frames(batch["frames"], device=device)
                 tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
-                results = model.predictor(pixel_values, tokens.input_ids, tokens.attention_mask)
+                sv = model.x_encoder(pixel_values)
+                results = model.predictor(sv, tokens.input_ids, tokens.attention_mask)
                 loss = criterion(results["offsets"], torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device))
                 val_loss += loss.item()
         

@@ -168,9 +168,7 @@ class Predictor(nn.Module):
             self.text_model.layers = self.text_model.layers[n - config.predictor_layers:]
         
         hidden_size = self.text_model.config.hidden_size
-        print(f"  [Predictor] hidden_size: {hidden_size}, x_dim: {config.x_dim}")
         self.visual_proj = nn.Linear(config.x_dim, hidden_size)
-        print(f"  [Predictor] visual_proj shape: {self.visual_proj.weight.shape}")
         self.output_proj = nn.Linear(hidden_size, config.embed_dim)
         
         if config.use_regression:
