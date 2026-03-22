@@ -859,8 +859,9 @@ if os.path.exists(best_ckpt_path):
     print("="*50)
     
     import subprocess
+    import sys
     cmd = [
-        "python", "training/eval.py",
+        sys.executable, "training/eval.py",
         "--checkpoint", best_ckpt_path,
     ]
     if wandb_id:
