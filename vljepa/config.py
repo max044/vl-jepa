@@ -70,8 +70,8 @@ class Config:
     early_stopping_patience: int = 5  # Stop if no validation improvement for N epochs (-1 to disable)
 
     # ── Inference ───────────────────────────────────────────
-    window_sizes: list[float] = field(default_factory=lambda: [2.0, 4.0, 8.0, 16.0])
-    window_stride: float = 1.0
+    window_sizes: list[float] = field(default_factory=lambda: [4.0, 8.0, 16.0])
+    window_stride: float = 2.0
     nms_threshold: float = 0.5
     inference_batch_size: int = 32  # Batch size for sliding window proposals
     top_k: int = 5
