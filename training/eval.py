@@ -40,6 +40,8 @@ def parse_args():
     parser.add_argument("--wandb-project", type=str, default="vl-jepa")
     parser.add_argument("--wandb-run-path", type=str, default=None)
     parser.add_argument("--save-report", type=str, default="eval_report.txt")
+    parser.add_argument("--window-stride", type=float, default=None)
+    parser.add_argument("--window-sizes", type=str, default=None, help="Comma-separated float list (e.g. 4.0,8.0,16.0)")
     return parser.parse_args()
 
 
@@ -88,6 +90,10 @@ def main():
     # CLI Overrides
     if args.device:
         config.device = args.device
+    if args.window_stride:
+        config.window_stride = args.window_stride
+    if args.window_sizes:
+        config.window_sizes = [float(x.strip()) for x in args.window_sizes.split(",")]
 
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
