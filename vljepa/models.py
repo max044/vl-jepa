@@ -42,7 +42,8 @@ class XEncoder(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
         self.config = config
-        self.model = AutoModel.from_pretrained(config.clip_model, trust_remote_code=True)
+        dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}.get(config.dtype, torch.float32)
+        self.model = AutoModel.from_pretrained(config.clip_model, trust_remote_code=True, torch_dtype=dtype)
 
         for p in self.model.parameters():
             p.requires_grad = False
@@ -54,6 +55,7 @@ class XEncoder(nn.Module):
     @torch.no_grad()
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Return mean-pooled video embedding (B, x_dim)."""
+        pixel_values = pixel_values.to(self.model.device)
         if pixel_values.shape[1] == 3 and pixel_values.shape[2] > 3:
             pixel_values = pixel_values.permute(0, 2, 1, 3, 4)
         outputs = self.model(pixel_values_videos=pixel_values)
@@ -168,8 +170,8 @@ class Predictor(nn.Module):
         for param in self.llama.norm.parameters():
             param.requires_grad = False
 
-        self.visual_proj = nn.Linear(config.x_dim, llama_hidden)
-        self.output_proj = nn.Linear(llama_hidden, EMBED_DIM)
+        self.visual_proj = nn.Linear(config.x_dim, llama_hidden).to(dtype)
+        self.output_proj = nn.Linear(llama_hidden, EMBED_DIM).to(dtype)
 
         self.to(config.device)
 
