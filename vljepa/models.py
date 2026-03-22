@@ -119,18 +119,19 @@ class QueryEncoder(nn.Module):
         ).to(device)
 
 class RegressionHead(nn.Module):
-    """Small MLP to predict [start_offset, end_offset] relative to window."""
-    def __init__(self, input_dim: int):
+    """Small MLP for temporal refinement."""
+    def __init__(self, hidden_size: int):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim // 2),
+        self.net = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(input_dim // 2, 2) # [start, end]
+            nn.Linear(hidden_size // 2, 2),
+            nn.Sigmoid() # Bound offsets to [0, 1]
         )
     
     def forward(self, x):
-        return self.mlp(x)
+        return self.net(x)
 
 class Predictor(nn.Module):
     def __init__(self, config: Config):
@@ -214,13 +215,16 @@ class Predictor(nn.Module):
         return results
 
 class IntervalIoULoss(nn.Module):
-    """Temporal IoU Loss for grounding intervals."""
+    """Temporal IoU Loss for grounding intervals with GIoU and order penalty."""
     def forward(self, pred, target):
         # pred, target: (B, 2) in [0, 1] range [start_offset, end_offset]
         p_s, p_e = pred[:, 0], pred[:, 1]
         t_s, t_e = target[:, 0], target[:, 1]
         
-        # Ensure s < e for valid intervals
+        # 1. Order Penalty (Don't let the model get away with start > end)
+        order_penalty = torch.clamp(p_s - p_e, min=0).mean()
+        
+        # 2. Validity fallback (for IoU calculation only)
         p_s_final = torch.min(p_s, p_e)
         p_e_final = torch.max(p_s, p_e)
         
@@ -233,7 +237,15 @@ class IntervalIoULoss(nn.Module):
         union = (union_e - union_s).clamp(min=1e-6)
         
         iou = inter / union
-        return 1 - iou.mean()
+        
+        # 3. GIoU: Add outer box penalty to guide non-overlapping intervals
+        outer_s = torch.min(p_s_final, t_s)
+        outer_e = torch.max(p_e_final, t_e)
+        outer = (outer_e - outer_s).clamp(min=1e-6)
+        
+        giou = iou - (outer - union) / outer
+        
+        return (1 - giou.mean()) + 0.1 * order_penalty
 
 class YEncoder(nn.Module):
     """Qwen3-Embedding-0.6B Y-Encoder (trainable with reduced LR).

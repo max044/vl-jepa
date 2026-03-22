@@ -74,21 +74,37 @@ def train():
 
     # 3. Data Loading
     print("\n📦 Loading dataset...")
-    train_dataset = CharadesSTADataset(
+    full_dataset = CharadesSTADataset(
         anno_file=config.anno_train,
         videos_dir=config.videos_dir,
         config=config,
         split="train"
     )
     
-    # Small validation subset
-    val_size = min(200, int(0.1 * len(train_dataset)))
-    train_subset, val_subset = torch.utils.data.random_split(
-        train_dataset, [len(train_dataset)-val_size, val_size]
-    )
+    # [FIX] Video-level split to avoid data leakage
+    # If the same video appears in multiple annotations, it must be in the same split.
+    import random
+    all_video_ids = list(set([s['video_id'] for s in full_dataset.samples]))
+    random.seed(42)
+    random.shuffle(all_video_ids)
     
-    train_loader = DataLoader(train_subset, batch_size=config.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=4)
-    val_loader = DataLoader(val_subset, batch_size=config.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=4)
+    val_part = 0.1
+    val_count = max(1, int(len(all_video_ids) * val_part))
+    val_videos = set(all_video_ids[:val_count])
+    
+    train_samples = [s for s in full_dataset.samples if s['video_id'] not in val_videos]
+    val_samples = [s for s in full_dataset.samples if s['video_id'] in val_videos]
+    
+    print(f"  ✓ Split: {len(train_samples)} train samples vs {len(val_samples)} val samples (from {len(val_videos)} videos)")
+    
+    import copy
+    train_dataset = copy.deepcopy(full_dataset)
+    train_dataset.samples = train_samples
+    val_dataset = copy.deepcopy(full_dataset)
+    val_dataset.samples = val_samples
+    
+    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True, collate_fn=collate_fn, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False, collate_fn=collate_fn, num_workers=4)
     
     # 4. Optimizer & Loss
     optimizer = torch.optim.AdamW(model.predictor.regression_head.parameters(), lr=config.lr)
@@ -108,33 +124,34 @@ def train():
 
     print(f"\n🚀 Starting 2-Phase Regression Training for {args.epochs} epochs...")
     best_val_loss = float("inf")
+    scheduler = None
     
     for epoch in range(args.epochs):
         # Phase Switch: Unfreeze Predictor LoRA after 5 epochs
         if epoch == 5:
             print("\n🔥 Phase 2: Unfreezing Predictor LoRA adapters for fine-tuning...")
             if config.use_lora:
-                for p in model.predictor.parameters():
-                    if p.requires_grad is False: # Check if it's a LoRA param
-                        # Actually PEFT marks LoRA params as requires_grad=True automatically
-                        # But since we forced ALL frozen at line 64, we need to re-enable
-                        pass 
-                
-                # Correct way for PEFT:
+                # Correct way for PEFT: re-enable lora grads
                 for name, param in model.predictor.named_parameters():
                     if "lora" in name:
                         param.requires_grad = True
                 
-                # Refresh optimizer to include new params
+                # Refresh optimizer to include new params with smaller LR
                 trainable_params = [
                     {'params': model.predictor.regression_head.parameters(), 'lr': config.lr},
                     {'params': [p for n, p in model.predictor.named_parameters() if "lora" in n], 'lr': config.lr * 0.1}
                 ]
                 optimizer = torch.optim.AdamW(trainable_params)
+                
+                # Add Warmup Scheduler for the new phase
+                scheduler = torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=0.1, total_iters=len(train_loader)
+                )
             else:
                 print("  (No LoRA detected, skipping predictor unfreezing)")
 
-        model.train()
+        # Set specific modules to train/eval
+        model.predictor.train()
         model.x_encoder.eval() 
         model.y_encoder.eval()
         
@@ -160,6 +177,8 @@ def train():
             
             loss.backward()
             optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
             
             train_loss += loss.item()
             
@@ -169,7 +188,7 @@ def train():
                     wandb.log({"reg/batch_loss": loss.item(), "reg/batch_l1": loss_l1.item(), "reg/batch_iou": loss_iou.item()})
 
         # Validation at end of epoch
-        model.eval()
+        model.predictor.eval()
         val_loss = 0
         val_iou = 0
         with torch.no_grad():
