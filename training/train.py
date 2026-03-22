@@ -28,7 +28,6 @@ from vljepa.dataset import CharadesSTADataset, collate_fn, make_video_split
 from vljepa.models import VLJepa
 from vljepa.losses import vl_jepa_loss
 
-DATA_DIR      = Path("data")
 CHECKPOINT_DIR = Path("checkpoints")
 BEST_CHECKPOINT = CHECKPOINT_DIR / "best.pt"
 LAST_CHECKPOINT = CHECKPOINT_DIR / "last.pt"
@@ -132,8 +131,8 @@ print(f"Config: {asdict(config)}")
 # ---------------------------------------------------------------------------
 
 train_dataset = CharadesSTADataset(
-    anno_file=str(DATA_DIR / "charades_sta_train.txt"),
-    videos_dir=str(DATA_DIR / "Charades_v1_480"),
+    anno_file=config.anno_train,
+    videos_dir=config.videos_dir,
     config=config,
     split="train",
 )
