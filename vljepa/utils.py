@@ -2,7 +2,6 @@
 
 import cv2
 import numpy as np
-import torch
 
 
 def load_video_frames(
@@ -11,88 +10,63 @@ def load_video_frames(
     end_sec: float | None = None,
     num_frames: int = 16,
 ) -> list[np.ndarray] | None:
-    """Legacy wrapper for backward compatibility."""
+    """Load a fixed number of frames from a temporal segment of a video.
+
+    Returns a list of RGB numpy arrays (H, W, 3), or None on failure.
+    Used by CharadesSTADataset during training.
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None
-    
-    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    fps          = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if fps <= 0: return None
-    
+    if fps <= 0:
+        cap.release()
+        return None
+
     start_frame = max(0, int(start_sec * fps))
-    end_frame = min(total_frames - 1, int(end_sec * fps))
-    if end_frame <= start_frame: return None
-    
+    end_frame   = min(total_frames - 1, int(end_sec * fps) if end_sec is not None else total_frames - 1)
+    if end_frame <= start_frame:
+        cap.release()
+        return None
+
     indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
-    frames = []
+    frames  = []
     for idx in indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ret, frame = cap.read()
-        if ret: frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    
+        if ret:
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
     cap.release()
     return frames if frames else None
 
 
 def load_video_to_ram(video_path: str) -> dict | None:
-    """Load an entire video into a numpy array in RAM.
-    
-    Returns:
-        dict with 'frames' (N, H, W, 3) and 'fps', or None.
+    """Load an entire video into RAM as a single RGB numpy array.
+
+    Returns dict with 'frames' (N, H, W, 3) uint8 RGB and 'fps', or None.
+    Used by eval.py to load each video once before sliding window scoring.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return None
-    
-    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    fps    = cap.get(cv2.CAP_PROP_FPS)
     frames = []
-    
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(frame) # Keep as BGR for now
-    
+        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))  # BGR → RGB
+
     cap.release()
-    
+
     if not frames:
         return None
-        
-    return {
-        "frames": np.array(frames),
-        "fps": fps
-    }
 
-
-def sample_frames_from_array(video_data: dict, start_sec: float, end_sec: float, num_frames: int = 16) -> list[np.ndarray] | None:
-    """Sample frames from a pre-loaded numpy array."""
-    frames = video_data["frames"]
-    fps = video_data["fps"]
-    total_frames = len(frames)
-    
-    start_frame = max(0, int(start_sec * fps))
-    end_frame = min(total_frames - 1, int(end_sec * fps))
-    
-    if end_frame <= start_frame:
-        return None
-        
-    indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
-    return [frames[idx] for idx in indices]
-
-
-
-def get_video_duration(video_path: str) -> float:
-    """Get video duration in seconds."""
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return 0.0
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-    if fps <= 0:
-        return 0.0
-    return total_frames / fps
+    return {"frames": np.array(frames), "fps": fps}
 
 
 def temporal_iou(
@@ -101,14 +75,10 @@ def temporal_iou(
     gt_start: float,
     gt_end: float,
 ) -> float:
-    """Compute temporal Intersection over Union between two segments."""
-    inter_start = max(pred_start, gt_start)
-    inter_end = min(pred_end, gt_end)
-    inter = max(0.0, inter_end - inter_start)
+    """Temporal Intersection over Union between two segments."""
+    inter = max(0.0, min(pred_end, gt_end) - max(pred_start, gt_start))
     union = (pred_end - pred_start) + (gt_end - gt_start) - inter
-    if union <= 0:
-        return 0.0
-    return inter / union
+    return inter / union if union > 0 else 0.0
 
 
 def nms(
@@ -118,31 +88,20 @@ def nms(
 ) -> list[int]:
     """Non-maximum suppression for temporal proposals.
 
-    Args:
-        proposals: list of (start, end) tuples
-        scores: corresponding scores
-        iou_threshold: suppress proposals with IoU above this
-
-    Returns:
-        List of kept indices (sorted by score descending).
+    Returns kept indices sorted by score descending.
     """
-    if len(proposals) == 0:
+    if not proposals:
         return []
 
-    sorted_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-    kept = []
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    kept  = []
 
-    for i in sorted_idx:
-        should_keep = True
-        for j in kept:
-            iou = temporal_iou(
-                proposals[i][0], proposals[i][1],
-                proposals[j][0], proposals[j][1],
-            )
-            if iou > iou_threshold:
-                should_keep = False
-                break
-        if should_keep:
+    for i in order:
+        if all(
+            temporal_iou(proposals[i][0], proposals[i][1],
+                         proposals[j][0], proposals[j][1]) <= iou_threshold
+            for j in kept
+        ):
             kept.append(i)
 
     return kept
@@ -153,25 +112,20 @@ def sliding_window_proposals(
     window_sizes: list[float],
     stride: float = 1.0,
 ) -> list[tuple[float, float]]:
-    """Generate candidate temporal proposals using sliding windows.
+    """Generate temporal proposals via sliding windows.
 
-    Args:
-        duration: total video duration in seconds
-        window_sizes: list of window durations to use
-        stride: step size in seconds
+    For each window size, slides across the video with the given stride.
+    If a window is larger than the video, a single proposal covers the whole video.
 
-    Returns:
-        List of (start, end) proposals.
+    Returns list of (start, end) tuples in seconds.
     """
     proposals = []
     for ws in window_sizes:
-        if ws > duration:
-            # Single proposal covering the whole video
+        if ws >= duration:
             proposals.append((0.0, duration))
             continue
         start = 0.0
-        while start + ws <= duration + 0.01:  # small epsilon for float
-            end = min(start + ws, duration)
-            proposals.append((start, end))
+        while start + ws <= duration + 1e-6:
+            proposals.append((start, min(start + ws, duration)))
             start += stride
     return proposals

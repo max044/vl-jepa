@@ -1,11 +1,12 @@
 """
-Download full Charades-STA dataset for training.
-Downloads all annotations and videos from Hugging Face Storage.
+Download Charades-STA dataset for VL-JEPA training.
+
+Annotations and videos are stored together in the HF bucket.
+A single `hf sync` downloads everything (resumable).
 
 Usage:
     uv run training/download_data.py
-
-Data stored in data/ (15GB total)
+    uv run training/download_data.py --verify-only
 """
 
 import os
@@ -18,84 +19,67 @@ import argparse
 # Configuration
 # ---------------------------------------------------------------------------
 
-DATA_DIR = Path("data")
-HF_BUCKET = "max044/charades-sta-storage"
-BASE_URL = "https://raw.githubusercontent.com/max044/vl-jepa/main/data"
+DATA_DIR  = Path("data")
+VIDEO_DIR = DATA_DIR / "Charades_v1_480"
+
+HF_BUCKET_ID    = "max044/charades-sta-storage"
+ANNO_FILES      = ["charades_sta_train.txt", "charades_sta_test.txt"]
+EXPECTED_VIDEOS = 9848
+
 
 # ---------------------------------------------------------------------------
-# Data download
+# Steps
 # ---------------------------------------------------------------------------
 
-def download_annotations():
-    """Download train/test annotations."""
+def download_all():
+    """Download everything (annotations + videos) via a single hf sync."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    
-    files = ["charades_sta_train.txt", "charades_sta_test.txt"]
-    for fname in files:
-        fpath = DATA_DIR / fname
-        if fpath.exists():
-            print(f"  ✓ {fname} already exists")
-            continue
-        
-        url = f"{BASE_URL}/{fname}"
-        print(f"  📥 Downloading {fname}...")
-        subprocess.run(["curl", "-L", "-o", str(fpath), url], check=True)
-    
-    print(f"✅ Annotations ready")
 
-
-def download_all_videos():
-    """Download all videos from HF Storage (9,848 videos, ~15GB)."""
-    video_dir = DATA_DIR / "Charades_v1_480"
-    
-    if video_dir.exists() and len(list(video_dir.glob("*.mp4"))) >= 9000:
-        print(f"✓ Videos already downloaded ({len(list(video_dir.glob('*.mp4')))} files)")
-        return
-    
-    print("📥 Downloading all videos from Hugging Face Storage...")
-    print("   This will download ~15GB of data (9,848 videos)")
-    print("   Source: max044/charades-sta-storage")
+    print(f"  📥 Syncing from hf://buckets/{HF_BUCKET_ID} → {DATA_DIR}")
+    print(f"     (~15 GB, resumable)")
     print()
-    
-    try:
-        # Use hf sync to download all videos
-        cmd = [
-            "hf", "sync",
-            f"hf://buckets/{HF_BUCKET}/Charades_v1_480",
-            str(video_dir),
-            "--include", "*.mp4"
-        ]
-        
-        print(f"Running: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True)
-        
-        num_videos = len(list(video_dir.glob("*.mp4")))
-        print(f"✅ Downloaded {num_videos} videos")
-        
-    except Exception as e:
-        print(f"⚠️  Error downloading videos: {e}")
-        print("   You can also download manually from:")
-        print(f"   https://huggingface.co/datasets/{HF_BUCKET}")
+
+    cmd = [
+        "hf", "sync",
+        f"hf://buckets/{HF_BUCKET_ID}",
+        str(DATA_DIR),
+    ]
+
+    print(f"  Running: {' '.join(cmd)}")
+    result = subprocess.run(cmd)
+
+    if result.returncode != 0:
+        print(f"\n❌ hf sync failed (exit code {result.returncode})")
+        print(f"\nManual:")
+        print(f"  hf sync hf://buckets/{HF_BUCKET_ID} {DATA_DIR}")
         sys.exit(1)
 
+    print(f"\n✅ Sync complete")
 
-def verify_setup():
-    """Verify that all data is ready."""
-    train_file = DATA_DIR / "charades_sta_train.txt"
-    test_file = DATA_DIR / "charades_sta_test.txt"
-    video_dir = DATA_DIR / "Charades_v1_480"
-    
-    if not train_file.exists() or not test_file.exists():
-        print("❌ Annotations missing")
-        return False
-    
-    videos = list(video_dir.glob("*.mp4"))
-    if len(videos) < 9000:
-        print(f"⚠️  Only {len(videos)} videos found (expected 9,848)")
-        return False
-    
-    print(f"✅ Setup verified: {len(videos)} videos, annotations ready")
-    return True
+
+def verify():
+    """Verify annotations and video count."""
+    ok = True
+
+    for fname in ANNO_FILES:
+        fpath = DATA_DIR / fname
+        if fpath.exists():
+            n_lines = sum(1 for line in fpath.open() if line.strip())
+            print(f"  ✓ {fname} ({n_lines} annotations)")
+        else:
+            print(f"  ❌ {fname} missing")
+            ok = False
+
+    n_videos = len(list(VIDEO_DIR.glob("*.mp4"))) if VIDEO_DIR.exists() else 0
+    if n_videos >= EXPECTED_VIDEOS:
+        print(f"  ✓ {n_videos} videos in {VIDEO_DIR}")
+    else:
+        print(f"  ⚠️  {n_videos}/{EXPECTED_VIDEOS} videos in {VIDEO_DIR}")
+        ok = False
+
+    return ok
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -103,44 +87,28 @@ def verify_setup():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download full Charades-STA dataset")
-    parser.add_argument("--verify-only", action="store_true", 
-                       help="Only verify setup, don't download")
+    parser = argparse.ArgumentParser(description="Download Charades-STA for VL-JEPA")
+    parser.add_argument("--verify-only", action="store_true", help="Only verify, don't download")
     args = parser.parse_args()
 
-    print("=" * 60)
-    print("VL-JEPA: Full Dataset Download")
-    print("=" * 60)
+    print("=" * 55)
+    print("VL-JEPA — Charades-STA Download")
+    print("=" * 55)
     print()
 
     if args.verify_only:
-        if verify_setup():
-            print("\n✅ All data is ready!")
-            sys.exit(0)
-        else:
-            print("\n❌ Data incomplete")
-            sys.exit(1)
+        sys.exit(0 if verify() else 1)
 
-    # Step 1: Download annotations
-    print("Step 1: Downloading annotations...")
-    download_annotations()
+    print("Step 1: Download")
+    download_all()
     print()
 
-    # Step 2: Download all videos
-    print("Step 2: Downloading videos...")
-    download_all_videos()
-    print()
-
-    # Step 3: Verify
-    print("Step 3: Verifying setup...")
-    if verify_setup():
-        print("\n" + "=" * 60)
-        print("✅ Done! Dataset ready for training.")
-        print("=" * 60)
-        print(f"\nLocation: {DATA_DIR}")
-        print(f"Training samples: ~12,000")
-        print(f"Videos: 9,848")
-        print(f"\nNext step: bash scripts/cloud_train.sh")
+    print("Step 2: Verification")
+    if verify():
+        print()
+        print("=" * 55)
+        print("✅ Dataset ready for training.")
+        print("=" * 55)
     else:
-        print("\n❌ Setup incomplete. Please check errors above.")
+        print("\n❌ Setup incomplete.")
         sys.exit(1)

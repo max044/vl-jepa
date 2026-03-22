@@ -1,38 +1,28 @@
 """Charades-STA dataset for VL-JEPA training."""
 
 import os
+import random
 import numpy as np
-import torch
+from collections import defaultdict
 from torch.utils.data import Dataset
 
 from vljepa.config import Config
 from vljepa.utils import load_video_frames
 
-try:
-    from huggingface_hub import hf_hub_download
-    HAS_HF_HUB = True
-except ImportError:
-    HAS_HF_HUB = False
-
-# HF Storage bucket configuration - read from env or use default
-HF_STORAGE_BUCKET = os.getenv("HF_BUCKET_ID", "max044/charades-sta-storage")
+QUERY = "What is happening in this video?"  # Fixed neutral query (paper Section 3.1)
 
 
 class CharadesSTADataset(Dataset):
-    """Dataset for Charades-STA temporal grounding.
+    """Charades-STA temporal grounding dataset.
 
     Annotation format: video_id start end##sentence
     Example: 3MSZA 24.3 30.4##person turn a light on
 
-    For training, the query is a neutral prompt ("What is happening in this video?")
-    and the target is the ground-truth caption.
+    Each sample provides:
+      - frames   : video frames from the annotated temporal segment
+      - query    : fixed neutral prompt ("What is happening in this video?")
+      - caption  : ground-truth sentence (target for Y-Encoder)
     """
-
-    NEUTRAL_QUERIES = [
-        "What is happening in this video?",
-        "Describe this video clip.",
-        "What action is being performed?",
-    ]
 
     def __init__(
         self,
@@ -54,11 +44,11 @@ class CharadesSTADataset(Dataset):
         print(f"[{split}] Loaded {len(self.samples)} samples")
 
     def _load_annotations(self, anno_file: str):
-        """Parse Charades-STA annotation file."""
         if not os.path.exists(anno_file):
-            # Try loading from HuggingFace datasets
-            self._load_from_hf()
-            return
+            raise FileNotFoundError(
+                f"Annotation file not found: {anno_file}\n"
+                "Download Charades-STA annotations from https://github.com/jiyanggao/TALL"
+            )
 
         with open(anno_file, "r") as f:
             for line in f:
@@ -66,7 +56,6 @@ class CharadesSTADataset(Dataset):
                 if not line:
                     continue
 
-                # Format: video_id start end##sentence
                 parts = line.split("##")
                 if len(parts) < 2:
                     continue
@@ -78,153 +67,95 @@ class CharadesSTADataset(Dataset):
                     continue
 
                 video_id = meta[0]
-                start = float(meta[1])
-                end = float(meta[2])
+                try:
+                    start = float(meta[1])
+                    end   = float(meta[2])
+                except ValueError:
+                    continue
+
+                if end <= start:
+                    continue
 
                 video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
-                
-                # If streaming/lazy loading is enabled, we add even if not local
-                if os.path.exists(video_path) or self.config.use_hf_storage:
-                    self.samples.append({
-                        "video_path": video_path,
-                        "video_id": video_id,
-                        "start": start,
-                        "end": end,
-                        "caption": sentence,
-                    })
+                if not os.path.exists(video_path):
+                    continue
 
-    def _load_from_hf(self):
-        """Fallback: load annotations from HuggingFace datasets."""
-        try:
-            from datasets import load_dataset
+                self.samples.append({
+                    "video_path": video_path,
+                    "video_id":   video_id,
+                    "start":      start,
+                    "end":        end,
+                    "caption":    sentence,
+                })
 
-            print("Loading annotations from HuggingFace (lmms-lab/charades_sta)...")
-            ds = load_dataset("lmms-lab/charades_sta", split="test")
-
-            for item in ds:
-                video_id = item.get("video_id") or item.get("video", "")
-                start = float(item.get("start", 0))
-                end = float(item.get("end", 10))
-                caption = item.get("query", "") or item.get("description", "")
-
-                video_path = os.path.join(self.videos_dir, f"{video_id}.mp4")
-                if (os.path.exists(video_path) or self.config.use_hf_storage) and caption:
-                    self.samples.append({
-                        "video_path": video_path,
-                        "video_id": video_id,
-                        "start": start,
-                        "end": end,
-                        "caption": caption,
-                    })
-
-        except Exception as e:
-            print(f"Failed to load from HuggingFace: {e}")
-            print("Please download annotations manually. See download_annotations.py")
+    def video_ids(self) -> list[str]:
+        """Return the list of unique video IDs in this dataset."""
+        return list({s["video_id"] for s in self.samples})
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> dict | None:
         sample = self.samples[idx]
-        video_path = sample["video_path"]
-
-        # ── Lazy Loading from HF Storage Bucket ────────────────────────────
-        # Check if we should use HF Storage (XET) for lazy loading
-        use_hf_storage = (
-            not os.path.exists(video_path) and self.config.use_hf_storage
-        )
-
-        if use_hf_storage and HAS_HF_HUB:
-            try:
-                # HF Storage bucket with XET (fast)
-                video_path = hf_hub_download(
-                    repo_id=HF_STORAGE_BUCKET,
-                    filename=f"Charades_v1_480/{sample['video_id']}.mp4",
-                    repo_type="dataset",
-                    local_dir=self.videos_dir,
-                    local_dir_use_symlinks=False,
-                    token=os.getenv('HF_TOKEN'),
-                )
-            except Exception as e:
-                print(f"Error downloading {sample['video_id']} from HF Storage: {e}")
-                # Fallback to HF Dataset
-                try:
-                    video_path = hf_hub_download(
-                        repo_id=getattr(self.config, 'hf_dataset_id', 'max044/Charades_v1_480'),
-                        filename=f"{sample['video_id']}.mp4",
-                        repo_type="dataset",
-                        local_dir=self.videos_dir,
-                        local_dir_use_symlinks=False,
-                        token=os.getenv('HF_TOKEN'),
-                    )
-                except Exception as e2:
-                    print(f"Error downloading {sample['video_id']}: {e2}")
-                    return None
-
-        # Load frames from the annotated temporal segment
-        # If use_regression is enabled, we occasionally sample a larger window
-        # to train the regression head.
-        start_sec = sample["start"]
-        end_sec = sample["end"]
-        
-        if self.split == "train" and getattr(self.config, "use_regression", False):
-            # Jitter window: +/- 20% of duration, or fixed 2s
-            dur = end_sec - start_sec
-            jitter = min(2.0, dur * 0.2)
-            
-            # Randomly shift start/end
-            win_start = max(0, start_sec - np.random.uniform(0, jitter))
-            win_end = end_sec + np.random.uniform(0, jitter)
-            
-            # These are the boundaries of the frames we load
-            load_start, load_end = win_start, win_end
-        else:
-            load_start, load_end = start_sec, end_sec
 
         frames = load_video_frames(
-            video_path,
-            start_sec=load_start,
-            end_sec=load_end,
+            sample["video_path"],
+            start_sec=sample["start"],
+            end_sec=sample["end"],
             num_frames=self.config.num_frames,
         )
 
         if frames is None or len(frames) == 0:
             return None
 
-        # Calculate regression targets relative to the loaded window
-        # o_start = (gt_start - win_start) / win_duration
-        # o_end = (gt_end - win_start) / win_duration
-        win_dur = load_end - load_start
-        offset_start = (start_sec - load_start) / win_dur
-        offset_end = (end_sec - load_start) / win_dur
-
-        # Use a neutral query so the predictor must rely on the video, not cheat reading the target text.
-        import random
-        query = random.choice(self.NEUTRAL_QUERIES)
-
         return {
-            "frames": frames,           # list of numpy arrays (H, W, 3)
-            "query": query,             # neutral text query
-            "caption": sample["caption"],  # target caption
+            "frames":   frames,             # list of np.ndarray (H, W, 3)
+            "query":    QUERY,
+            "caption":  sample["caption"],
             "video_id": sample["video_id"],
-            "start": start_sec,
-            "end": end_sec,
-            "offset_targets": [offset_start, offset_end]
+            "start":    sample["start"],
+            "end":      sample["end"],
         }
 
 
+def make_video_split(
+    dataset: CharadesSTADataset,
+    val_split: float = 0.1,
+    seed: int = 42,
+) -> tuple[list[int], list[int]]:
+    """Split dataset indices by video_id to avoid leakage between train and val.
+
+    Returns (train_indices, val_indices).
+    """
+    video_to_indices: dict[str, list[int]] = defaultdict(list)
+    for i, s in enumerate(dataset.samples):
+        video_to_indices[s["video_id"]].append(i)
+
+    video_ids = list(video_to_indices.keys())
+    rng = random.Random(seed)
+    rng.shuffle(video_ids)
+
+    n_val = max(1, int(val_split * len(video_ids)))
+    val_videos  = set(video_ids[:n_val])
+    train_videos = set(video_ids[n_val:])
+
+    train_indices = [i for vid in train_videos for i in video_to_indices[vid]]
+    val_indices   = [i for vid in val_videos   for i in video_to_indices[vid]]
+
+    return train_indices, val_indices
+
+
 def collate_fn(batch: list[dict | None]) -> dict | None:
-    """Custom collate that filters out None samples."""
+    """Filter None samples and collate into a batch dict."""
     batch = [b for b in batch if b is not None]
-    if len(batch) == 0:
+    if not batch:
         return None
 
     return {
-        "frames": [b["frames"] for b in batch],
-        "queries": [b["query"] for b in batch],
-        "captions": [b["caption"] for b in batch],
+        "frames":    [b["frames"]   for b in batch],
+        "queries":   [b["query"]    for b in batch],
+        "captions":  [b["caption"]  for b in batch],
         "video_ids": [b["video_id"] for b in batch],
-        "starts": [b["start"] for b in batch],
-        "ends": [b["end"] for b in batch],
-        "offset_targets": [b["offset_targets"] for b in batch],
+        "starts":    [b["start"]    for b in batch],
+        "ends":      [b["end"]      for b in batch],
     }

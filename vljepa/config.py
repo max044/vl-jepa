@@ -1,8 +1,9 @@
 """Configuration for VL-JEPA training and inference."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 import torch
+import platform
 
 
 @dataclass
@@ -16,40 +17,35 @@ class Config:
     # X-Encoder: V-JEPA 2 ViT-L (frozen, ~300M)
     clip_model: str = "facebook/vjepa2-vitl-fpc64-256"
 
-    # Predictor: Qwen 3.5 0.8B (full fine-tune, no LoRA) - based on VL-JEPA paper
-    # Using Qwen3.5-0.8B as it's newer and closer to Llama-3.2-1B in size
-    predictor_model: str = "Qwen/Qwen3.5-0.8B"
-    use_lora: bool = True  # Enable LoRA adaptation to constrain trainable bounds to ~20M parameters
-    predictor_layers: int = 0  # 0 = use all layers (8 = last 8 layers, not working yet)
+    predictor_model: str = "meta-llama/Llama-3.2-1B"
+    use_lora: bool = True
+    predictor_layers: int = 8
     use_bidirectional_attention: bool = True  # Disable causal mask as per paper
 
-    # Y-Encoder: Qwen3-Embedding-0.6B (trainable) - better than EmbeddingGemma per ablation
-    text_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    # Y-Encoder: google/embeddinggemma-300m
+    text_model: str = "google/embeddinggemma-300m"
     y_encoder_lr_multiplier: float = 0.05  # LR multiplier for Y-Encoder as per paper
 
     # Embedding and model dimensions (from paper)
-    x_dim: int = 1024              # V-JEPA ViT-L output dim
-    predictor_dim: int = 1024      # Qwen3.5 hidden dim
-    text_dim: int = 1024           # Qwen3-Embedding-0.6B hidden_size
-    embed_dim: int = 1024          # Shared embedding space
+    x_dim: int = 1024              # V-JEPA 2 ViT-L output dim
 
     # ── Video ────────────────────────────────────────────────────────────
-    num_frames: int = 16
+    num_frames: int = 64
     frame_size: int = 224     # V-JEPA input resolution
 
     # ── Training ─────────────────────────────────────────────────────────
-    batch_size: int = 2       # Reduced due to larger model (Qwen3.5-0.8B)
-    grad_accumulation: int = 2  # Effective batch = 4
-    lr: float = 1e-4          # Lower LR for larger model
+    batch_size: int = 2
+    grad_accumulation: int = 1
+    lr: float = 3e-4
     weight_decay: float = 0.05
     epochs: int = 20
-    warmup_steps: int = 500
+    warmup_steps: int = 100
     grad_clip: float = 1.0
-    dtype: str = "fp32"       # FP32 for maximum compatibility
+    dtype: str = "bf16"
 
     # Loss
-    temperature: float = 0.07
-    sigreg_weight: float = 0.1  # SIGReg weight - penalizes representation collapse
+    temperature: float = 0.025
+    sigreg_weight: float = 0.05
 
     # ── Data ────────────────────────────────────────────────
     data_dir: str = "./data"
@@ -57,6 +53,7 @@ class Config:
     anno_train: str = "./data/charades_sta_train.txt"
     anno_test: str = "./data/charades_sta_test.txt"
     val_split: float = 0.1  # % of training data to use for validation
+    max_train_samples: int = 0  # 0 = use all data
 
     # HF Storage (XET) - faster alternative to dataset for cloud training
     use_hf_storage: bool = False  # Use HF dataset instead (bucket not accessible)
@@ -68,6 +65,7 @@ class Config:
     val_every: int = 2   # run validation every N epochs
     val_samples: int = 500  # limit validation samples for speed
     early_stopping_patience: int = 5  # Stop if no validation improvement for N epochs (-1 to disable)
+    val_frequency: float = 0.25  # Validate at 25%, 50%, 75%, 100% of each epoch
 
     # ── Inference ───────────────────────────────────────────
     window_sizes: list[float] = field(default_factory=lambda: [4.0, 8.0, 16.0])
@@ -85,9 +83,10 @@ class Config:
     query_max_length: int = 512  # Max query tokens (as per paper)
 
     # ── Debug ───────────────────────────────────────────────
-    debug: bool = False
+    debug: bool = True
     debug_samples: int = 100
-    num_workers: int = 0  # 0 for MPS compatibility
+
+    num_workers: int = 4
 
     def auto_detect(self):
         """Auto-detect device if empty."""
@@ -104,6 +103,8 @@ class Config:
 
     def __post_init__(self):
         self.auto_detect()
+        if platform.system() == "Darwin":
+            self.num_workers = 0
         # Ensure directories exist
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
@@ -111,7 +112,7 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict):
         """Create a Config from a dictionary, filtering unknown keys."""
-        valid_keys = {f.name for f in field_dict(cls)}
+        valid_keys = {f.name for f in fields(cls)}
         filtered_data = {k: v for k, v in data.items() if k in valid_keys}
         return cls(**filtered_data).auto_detect()
 
@@ -140,5 +141,3 @@ class Config:
             
             setattr(self, key, new_val)
         return self.auto_detect()
-
-from dataclasses import fields as field_dict
