@@ -201,14 +201,39 @@ class Predictor(nn.Module):
         
         hidden_states = outputs.last_hidden_state  # (B, 1+seq, hidden)
         
-        # Mean pooling sur les tokens non-paddés
-        mask_expanded = combined_mask.bool().unsqueeze(-1).float()
-        pooled = (hidden_states * mask_expanded).sum(dim=1) / mask_expanded.sum(dim=1).clamp(min=1)
+        # [NEW] Anchor-Token Pooling: Use the first token output (the visual anchor) 
+        # instead of mean pooling. This token carries the most concentrated relational 
+        # information between video and text.
+        pooled = hidden_states[:, 0, :]
         
+        # Keep global pooling ONLY for the similarity head (sy_hat) to match original JEPAL training if needed,
+        # but here we unify to pooled (anchor) for consistency in regression.
         results = {"sy_hat": self.output_proj(pooled)}
         if hasattr(self, "regression_head"):
             results["offsets"] = self.regression_head(pooled)
         return results
+
+class IntervalIoULoss(nn.Module):
+    """Temporal IoU Loss for grounding intervals."""
+    def forward(self, pred, target):
+        # pred, target: (B, 2) in [0, 1] range [start_offset, end_offset]
+        p_s, p_e = pred[:, 0], pred[:, 1]
+        t_s, t_e = target[:, 0], target[:, 1]
+        
+        # Ensure s < e for valid intervals
+        p_s_final = torch.min(p_s, p_e)
+        p_e_final = torch.max(p_s, p_e)
+        
+        inter_s = torch.max(p_s_final, t_s)
+        inter_e = torch.min(p_e_final, t_e)
+        inter = (inter_e - inter_s).clamp(min=0)
+        
+        union_s = torch.min(p_s_final, t_s)
+        union_e = torch.max(p_e_final, t_e)
+        union = (union_e - union_s).clamp(min=1e-6)
+        
+        iou = inter / union
+        return 1 - iou.mean()
 
 class YEncoder(nn.Module):
     """Qwen3-Embedding-0.6B Y-Encoder (trainable with reduced LR).

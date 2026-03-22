@@ -92,57 +92,86 @@ def train():
     
     # 4. Optimizer & Loss
     optimizer = torch.optim.AdamW(model.predictor.regression_head.parameters(), lr=config.lr)
-    criterion = nn.MSELoss()
+    l1_criterion = nn.L1Loss()
+    from vljepa.models import IntervalIoULoss
+    iou_criterion = IntervalIoULoss()
     
     # 5. W&B
     use_wandb = HAS_WANDB and not args.no_wandb
     if use_wandb:
+        name = f"regression-2phase-{time.strftime('%m%d-%H%M')}"
         wandb.init(
             project="vl-jepa",
-            name=f"regression-head-only-{time.strftime('%m%d-%H%M')}",
-            config={**asdict(config), "task": "regression_head_finetune"}
+            name=name,
+            config={**asdict(config), "task": "regression_head_2phase"}
         )
 
-    print(f"\n🚀 Starting Regression Training for {args.epochs} epochs...")
+    print(f"\n🚀 Starting 2-Phase Regression Training for {args.epochs} epochs...")
     best_val_loss = float("inf")
     
     for epoch in range(args.epochs):
+        # Phase Switch: Unfreeze Predictor LoRA after 5 epochs
+        if epoch == 5:
+            print("\n🔥 Phase 2: Unfreezing Predictor LoRA adapters for fine-tuning...")
+            if config.use_lora:
+                for p in model.predictor.parameters():
+                    if p.requires_grad is False: # Check if it's a LoRA param
+                        # Actually PEFT marks LoRA params as requires_grad=True automatically
+                        # But since we forced ALL frozen at line 64, we need to re-enable
+                        pass 
+                
+                # Correct way for PEFT:
+                for name, param in model.predictor.named_parameters():
+                    if "lora" in name:
+                        param.requires_grad = True
+                
+                # Refresh optimizer to include new params
+                trainable_params = [
+                    {'params': model.predictor.regression_head.parameters(), 'lr': config.lr},
+                    {'params': [p for n, p in model.predictor.named_parameters() if "lora" in n], 'lr': config.lr * 0.1}
+                ]
+                optimizer = torch.optim.AdamW(trainable_params)
+            else:
+                print("  (No LoRA detected, skipping predictor unfreezing)")
+
         model.train()
-        # Ensure encoders stay in eval mode (BN/Dropout)
         model.x_encoder.eval() 
         model.y_encoder.eval()
         
         train_loss = 0
+        pbar = range(len(train_loader))
         for batch_idx, batch in enumerate(train_loader):
             if batch is None: continue
             
             optimizer.zero_grad()
-            
-            # Forward
             pixel_values = model.x_encoder.preprocess_frames(batch["frames"], device=device)
-            # Tokenize and move to device
             tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
             
             with torch.no_grad():
                 sv = model.x_encoder(pixel_values)
             
             results = model.predictor(sv, tokens.input_ids, tokens.attention_mask)
-            
-            pred_offsets = results.get("offsets") # (B, 2)
+            pred_offsets = results.get("offsets")
             gt_offsets = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device)
             
-            loss = criterion(pred_offsets, gt_offsets)
+            loss_l1 = l1_criterion(pred_offsets, gt_offsets)
+            loss_iou = iou_criterion(pred_offsets, gt_offsets)
+            loss = 0.5 * loss_l1 + 0.5 * loss_iou
+            
             loss.backward()
             optimizer.step()
             
             train_loss += loss.item()
             
-            if batch_idx % 10 == 0:
-                print(f"Epoch {epoch} | Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.4f}")
+            if batch_idx % 20 == 0:
+                print(f"Epoch {epoch} | Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.4f} (L1: {loss_l1.item():.4f}, IoU: {loss_iou.item():.4f})")
+                if use_wandb:
+                    wandb.log({"reg/batch_loss": loss.item(), "reg/batch_l1": loss_l1.item(), "reg/batch_iou": loss_iou.item()})
 
-        # Validation
+        # Validation at end of epoch
         model.eval()
         val_loss = 0
+        val_iou = 0
         with torch.no_grad():
             for batch in val_loader:
                 if batch is None: continue
@@ -150,15 +179,21 @@ def train():
                 tokens = model.y_encoder.tokenizer(batch["queries"], padding=True, truncation=True, return_tensors="pt").to(device)
                 sv = model.x_encoder(pixel_values)
                 results = model.predictor(sv, tokens.input_ids, tokens.attention_mask)
-                loss = criterion(results["offsets"], torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device))
-                val_loss += loss.item()
+                pred = results["offsets"]
+                target = torch.tensor(batch["offset_targets"], dtype=torch.float32, device=device)
+                
+                v_l1 = l1_criterion(pred, target)
+                v_iou = iou_criterion(pred, target)
+                val_loss += (0.5 * v_l1 + 0.5 * v_iou).item()
+                val_iou += (1.0 - v_iou).item() # Higher is better
         
         val_loss /= len(val_loader)
+        val_iou /= len(val_loader)
         avg_train_loss = train_loss / len(train_loader)
-        print(f"Epoch {epoch} Summary | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        print(f"Epoch {epoch} Summary | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | Val IoU: {val_iou:.4f}")
         
         if use_wandb:
-            wandb.log({"reg/train_loss": avg_train_loss, "reg/val_loss": val_loss, "epoch": epoch})
+            wandb.log({"reg/train_loss": avg_train_loss, "reg/val_loss": val_loss, "reg/val_iou": val_iou, "epoch": epoch})
             
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -166,7 +201,8 @@ def train():
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "config": asdict(config),
-                "val_loss": val_loss
+                "val_loss": val_loss,
+                "val_iou": val_iou
             }, save_path)
             print(f"  ⭐ Saved best regression head to {save_path}")
 
