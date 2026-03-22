@@ -50,8 +50,8 @@ class Config:
     # ── Data ────────────────────────────────────────────────
     data_dir: str = "./data"
     videos_dir: str = "./data/Charades_v1_480"
-    anno_train: str = "./data/charades_sta_train.txt"
-    anno_test: str = "./data/charades_sta_test.txt"
+    anno_train: str = "./data/Charades_v1_480/charades_sta_train.txt"
+    anno_test: str = "./data/Charades_v1_480/charades_sta_test.txt"
     val_split: float = 0.1  # % of training data to use for validation
     max_train_samples: int = 0  # 0 = use all data
 

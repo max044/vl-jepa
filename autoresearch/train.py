@@ -37,7 +37,7 @@ os.environ.setdefault("WANDB_HTTP_TIMEOUT", "30")
 from vljepa.config import Config
 from vljepa.dataset import CharadesSTADataset, collate_fn
 from vljepa.models import VLJepa
-from vljepa.losses import vl_jepa_loss, SIGReg
+from vljepa.losses import vl_jepa_loss
 
 from prepare import TIME_BUDGET, DATA_DIR
 
