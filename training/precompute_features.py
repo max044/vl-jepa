@@ -61,21 +61,19 @@ def load_video_frames(video_path: Path, num_frames: int = 64) -> np.ndarray | No
         return None
 
 
-def preprocess_frames(frames_np: np.ndarray) -> torch.Tensor:
-    """CPU-only preprocessing — resize avec PIL, normalise en numpy."""
-    from PIL import Image
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+def preprocess_frames(frames_np: np.ndarray, device: str) -> torch.Tensor:
+    """(T, H, W, 3) uint8 → (1, T, C, H, W) float normalised."""
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
 
-    resized = []
-    for frame in frames_np:
-        img = Image.fromarray(frame).resize((224, 224), Image.BILINEAR)
-        resized.append(np.array(img, dtype=np.float32) / 255.0)
+    t = torch.tensor(frames_np, dtype=torch.float32, device=device)  # (T, H, W, 3)
+    t = t.permute(0, 3, 1, 2) / 255.0                                # (T, 3, H, W)
+    t = F.interpolate(t, size=(224, 224), mode="bilinear", align_corners=False)
+    t = (t - mean) / std                                              # (T, 3, 224, 224)
 
-    t = np.stack(resized)               # (T, 224, 224, 3)
-    t = (t - mean) / std
-    t = t.transpose(3, 0, 1, 2)        # (3, T, 224, 224)
-    return torch.from_numpy(t).unsqueeze(0)  # (1, 3, T, 224, 224)
+    # V-JEPA expects (B, C, T, H, W)
+    t = t.permute(1, 0, 2, 3).unsqueeze(0)                           # (1, C, T, H, W)
+    return t
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +173,7 @@ def main():
                 continue
 
             try:
-                tensor = preprocess_frames(frames)
+                tensor = preprocess_frames(frames, device)
                 batch_paths.append(video_path)
                 batch_tensors.append(tensor)
             except Exception as e:
