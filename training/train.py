@@ -1,9 +1,9 @@
 """
 VL-JEPA Training Script
 Usage:
-    uv run training/train.py                          # resume from last checkpoint if exists
-    uv run training/train.py --reset                  # start from scratch
-    uv run training/train.py --artifact entity/project/last-RUNID:latest  # resume from W&B artifact
+    uv run training/train.py                    # fresh start or resume from local last.pt
+    uv run training/train.py --reset            # delete local checkpoints, fresh start
+    uv run training/train.py --run-id 9111qttj  # resume a specific W&B run (must have local checkpoint)
 
 nohup uv run training/train.py > logs/train.log 2>&1 &
 tail -f logs/train.log
@@ -51,12 +51,11 @@ WANDB_PROJECT = "vl-jepa"
 # ---------------------------------------------------------------------------
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--reset",    action="store_true",
-                    help="Delete existing checkpoints and start from scratch")
-parser.add_argument("--artifact", type=str, default=None,
-                    help="W&B artifact to pull as starting checkpoint "
-                         "(e.g. 'entity/project/last-RUNID:latest'). "
-                         "Replaces any local checkpoint.")
+parser.add_argument("--reset",  action="store_true",
+                    help="Delete local checkpoints and start from scratch")
+parser.add_argument("--run-id", type=str, default=None,
+                    help="W&B run ID to resume (e.g. '9111qttj'). "
+                         "Checkpoint must already be present locally.")
 args, _ = parser.parse_known_args()
 
 # ---------------------------------------------------------------------------
@@ -92,7 +91,6 @@ def run_validation(model, loader, config):
 
 def save_checkpoint(model, optimizer, epoch, step, val_loss, config, path,
                     is_best=False, best_val_loss=None):
-    """Save checkpoint. best_val_loss is always stored so resume is accurate."""
     CHECKPOINT_DIR.mkdir(exist_ok=True)
     tmp = Path(path).with_suffix(".tmp")
     try:
@@ -102,7 +100,6 @@ def save_checkpoint(model, optimizer, epoch, step, val_loss, config, path,
             "model_state_dict":     model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "val_loss":             val_loss,
-            # Always store the true best_val_loss so resume restores state correctly
             "best_val_loss":        val_loss if is_best else (best_val_loss if best_val_loss is not None else val_loss),
             "config":               asdict(config),
             "wandb_id":             wandb.run.id if (USE_WANDB and HAS_WANDB and wandb.run) else None,
@@ -127,7 +124,6 @@ def log_checkpoint_to_wandb(path, name, epoch, val_loss, description=""):
 
 
 def handle_validation_result(avg_val_loss, model, optimizer, epoch, step, config, state):
-    """Returns (early_stop: bool, improved: bool)."""
     improved = avg_val_loss < state["best_val_loss"]
     if improved:
         state["best_val_loss"]     = avg_val_loss
@@ -155,23 +151,6 @@ def cleanup_wandb_cache():
         os.system("wandb artifact cache cleanup --bytes 1GB > /dev/null 2>&1")
 
 
-def download_artifact(artifact_id: str) -> Path:
-    """Pull a W&B artifact and return path to the downloaded .pt file."""
-    print(f"📥 Downloading W&B artifact: {artifact_id}")
-    import wandb as _wandb
-    # Use "must" only if we know the run exists — use a fresh run for download
-    _run = _wandb.init(project=WANDB_PROJECT, job_type="download")
-    art  = _run.use_artifact(artifact_id, type="model")
-    dest = art.download(root=str(CHECKPOINT_DIR))
-    _wandb.finish()
-    pt_files = list(Path(dest).glob("*.pt"))
-    if not pt_files:
-        raise FileNotFoundError(f"No .pt file in downloaded artifact at {dest}")
-    ckpt_path = pt_files[0]
-    print(f"  ✓ Downloaded to {ckpt_path}")
-    return ckpt_path
-
-
 # ---------------------------------------------------------------------------
 # Checkpoint bootstrap
 # ---------------------------------------------------------------------------
@@ -179,19 +158,11 @@ def download_artifact(artifact_id: str) -> Path:
 def resolve_starting_checkpoint() -> Path | None:
     """
     Priority:
-      1. --artifact  → download, save as last.pt
-      2. --reset     → delete local checkpoints
-      3. last.pt     → exact state resume (preferred)
-      4. best.pt     → fallback
-      5. None        → fresh start
+      1. --reset  → delete local checkpoints, fresh start
+      2. last.pt  → resume exact state (preferred)
+      3. best.pt  → fallback
+      4. None     → fresh start
     """
-    if args.artifact:
-        ckpt_path = download_artifact(args.artifact)
-        CHECKPOINT_DIR.mkdir(exist_ok=True)
-        if ckpt_path.resolve() != LAST_CHECKPOINT.resolve():
-            ckpt_path.rename(LAST_CHECKPOINT)
-        return LAST_CHECKPOINT
-
     if args.reset:
         for p in [BEST_CHECKPOINT, LAST_CHECKPOINT]:
             if p.exists():
@@ -310,13 +281,13 @@ for group in optimizer.param_groups:
     group["initial_lr"] = group["lr"]
 
 # ---------------------------------------------------------------------------
-# Resume
+# Resume from local checkpoint
 # ---------------------------------------------------------------------------
 
 state = {"best_val_loss": float("inf"), "best_epoch": 0, "epochs_no_improve": 0}
 step = start_epoch = 0
 early_stop = False
-resume_wandb_id = None
+resume_wandb_id = args.run_id  # --run-id takes priority over checkpoint's wandb_id
 
 starting_ckpt = resolve_starting_checkpoint()
 
@@ -328,28 +299,37 @@ if starting_ckpt is not None:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         start_epoch            = ckpt.get("epoch", 0)
         step                   = ckpt.get("step", 0)
-        # best_val_loss is now always stored correctly in the checkpoint
         state["best_val_loss"] = ckpt.get("best_val_loss") or float("inf")
         state["best_epoch"]    = start_epoch
-        resume_wandb_id        = ckpt.get("wandb_id")
+        # Use --run-id if provided, otherwise fall back to checkpoint's wandb_id
+        if resume_wandb_id is None:
+            resume_wandb_id = ckpt.get("wandb_id")
         print(f"  ✓ Resumed epoch {start_epoch}, step {step} "
               f"(best val: {state['best_val_loss']:.4f})")
     except Exception as e:
         print(f"  ⚠️  Resume failed ({e}), starting from scratch.")
 
 # ---------------------------------------------------------------------------
-# W&B — resume="allow" with explicit run ID per wandb docs recommendation
+# W&B — single clean init, resume="must" when we have a run ID
 # ---------------------------------------------------------------------------
 
 if USE_WANDB and HAS_WANDB:
-    wandb.init(
-        project=WANDB_PROJECT,
-        entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
-        config=asdict(config),
-        tags=["full_training", f"lr_{config.lr}", f"batch_{config.batch_size}"],
-        id=resume_wandb_id,          # None → new run, str → resume that run
-        resume="allow" if resume_wandb_id else None,  # only set resume when we have an ID
-    )
+    if resume_wandb_id:
+        # Resume the exact run — wandb will continue logging on the same curve
+        wandb.init(
+            project=WANDB_PROJECT,
+            entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
+            id=resume_wandb_id,
+            resume="must",
+        )
+    else:
+        # Fresh run
+        wandb.init(
+            project=WANDB_PROJECT,
+            entity=os.getenv("WANDB_ENTITY", "maxence-cabiddu-maxence-cabiddu"),
+            config=asdict(config),
+            tags=["full_training", f"lr_{config.lr}", f"batch_{config.batch_size}"],
+        )
     wandb.define_metric("global_step")
     wandb.define_metric("*", step_metric="global_step")
 
@@ -362,9 +342,7 @@ print(f"Training (early_stopping_patience={config.early_stopping_patience})\n")
 # Training loop
 # ---------------------------------------------------------------------------
 
-# Exclude val_pct=1.0 from intermediate checkpoints — end-of-epoch handles it.
-# e.g. val_frequency=0.5 → [0.5]  (not [0.5, 1.0])
-#      val_frequency=0.25 → [0.25, 0.5, 0.75]
+# Exclude 1.0 — end-of-epoch handles the final validation
 val_checkpoints = [
     config.val_frequency * (i + 1)
     for i in range(int(1 / config.val_frequency))
@@ -381,8 +359,7 @@ for epoch in range(start_epoch, config.epochs):
 
     num_batches = 0
     epoch_last_val_loss = None
-    # Reset EMA each epoch so it doesn't bleed across epoch boundaries
-    smooth_train_loss = 0.0
+    smooth_train_loss = 0.0  # reset EMA each epoch
 
     for batch_idx, batch in enumerate(train_loader):
         if batch is None:
@@ -413,8 +390,8 @@ for epoch in range(start_epoch, config.epochs):
             optimizer.zero_grad()
             step += 1
 
-        train_loss     = loss.item()
-        num_batches   += 1
+        train_loss   = loss.item()
+        num_batches += 1
 
         if USE_WANDB and HAS_WANDB and wandb.run and (step % 10 == 0 or step < 10):
             wandb.log({
@@ -433,7 +410,7 @@ for epoch in range(start_epoch, config.epochs):
               f"batch: {batch_idx+1}/{len(train_loader)}    ",
               end="", flush=True)
 
-        # Intermediate validation (never at 100% — handled end-of-epoch)
+        # Intermediate validation (never at 100%)
         for val_pct in val_checkpoints:
             if batch_idx != int(len(train_loader) * val_pct) - 1:
                 continue
@@ -476,7 +453,7 @@ for epoch in range(start_epoch, config.epochs):
         torch.cuda.synchronize()
     total_training_time += time.time() - t0
 
-    # End-of-epoch validation — always runs once per epoch
+    # End-of-epoch validation — always once per epoch
     cleanup_wandb_cache()
     avg_val_loss, _ = run_validation(model, val_loader, config)
     epoch_last_val_loss = avg_val_loss
@@ -500,7 +477,7 @@ for epoch in range(start_epoch, config.epochs):
               f"(val_loss: {state['best_val_loss']:.4f})")
         break
 
-    # Save last checkpoint + upload to W&B
+    # Save last + upload
     save_checkpoint(model, optimizer, epoch + 1, step,
                     epoch_last_val_loss, config, LAST_CHECKPOINT,
                     best_val_loss=state["best_val_loss"])
