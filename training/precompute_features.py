@@ -175,7 +175,7 @@ def main():
                 continue
 
             try:
-                tensor = preprocess_frames(frames, device)
+                tensor = preprocess_frames(frames)
                 batch_paths.append(video_path)
                 batch_tensors.append(tensor)
             except Exception as e:
