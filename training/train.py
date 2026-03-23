@@ -3,7 +3,8 @@ VL-JEPA Training Script
 Usage: uv run training/train.py
 
 nohup uv run training/train.py > logs/train.log 2>&1 &
-echo $!  # noter le PID
+
+tail -f logs/train.log
 """
 
 import os
