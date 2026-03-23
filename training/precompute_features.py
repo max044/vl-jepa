@@ -40,39 +40,22 @@ from vljepa.models import XEncoder
 # ---------------------------------------------------------------------------
 
 def load_video_frames(video_path: Path, num_frames: int = 64) -> np.ndarray | None:
-    """Decode a video and uniformly sample num_frames frames.
+    """Decode a video and uniformly sample num_frames frames using decord.
+
+    decord is 5-10x faster than cv2 for batch frame sampling — it loads all
+    requested frames in a single operation instead of seeking frame by frame.
 
     Returns (num_frames, H, W, 3) uint8 array or None on failure.
     """
     try:
-        import cv2
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            return None
-
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        from decord import VideoReader, cpu
+        vr      = VideoReader(str(video_path), ctx=cpu(0))
+        total   = len(vr)
         if total <= 0:
-            cap.release()
             return None
-
         indices = np.linspace(0, total - 1, num_frames, dtype=int)
-        frames  = []
-
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ret, frame = cap.read()
-            if not ret:
-                # Repeat last frame on read failure
-                if frames:
-                    frames.append(frames[-1])
-                else:
-                    frames.append(np.zeros((256, 256, 3), dtype=np.uint8))
-            else:
-                frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-        cap.release()
-        return np.stack(frames)  # (num_frames, H, W, 3)
-
+        frames  = vr.get_batch(indices).asnumpy()  # (T, H, W, 3) uint8
+        return frames
     except Exception as e:
         print(f"  ⚠️  Failed to load {video_path.name}: {e}")
         return None
@@ -149,14 +132,19 @@ def main():
         _write_manifest(output_dir, video_files)
         return
 
-    # Process videos
-    t0      = time.time()
-    done    = 0
-    failed  = 0
+    # Process videos in batches, loading frames in parallel with threads.
+    # decord releases the GIL so ThreadPoolExecutor gives real parallelism here.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    print(f"\nExtracting features ({device}, batch_size={args.batch_size})...")
-    print(f"{'Progress':>10}  {'Video':>40}  {'Status'}")
-    print("-" * 65)
+    t0     = time.time()
+    done   = 0
+    failed = 0
+
+    print(f"\nExtracting features (device={device}, gpu_batch={args.batch_size}, cpu_workers={args.workers})...")
+
+    def load_one(video_path):
+        frames = load_video_frames(video_path, num_frames=config.num_frames)
+        return video_path, frames
 
     batch_paths   = []
     batch_tensors = []
@@ -165,50 +153,43 @@ def main():
         nonlocal done
         if not batch_tensors:
             return
-
-        # Stack into (B, C, T, H, W)
         batch = torch.cat(batch_tensors, dim=0)  # (B, C, T, H, W)
-
         with torch.no_grad():
-            sv = encoder(batch)  # (B, x_dim)
-
-        # Save each video's feature individually
+            sv = encoder(batch)                  # (B, x_dim)
         for path, feat in zip(batch_paths, sv):
-            out_path = output_dir / f"{path.stem}.pt"
-            torch.save(feat.cpu(), out_path)
+            torch.save(feat.cpu(), output_dir / f"{path.stem}.pt")
             done += 1
-
         batch_paths.clear()
         batch_tensors.clear()
 
-    for i, video_path in enumerate(todo):
-        frames = load_video_frames(video_path, num_frames=config.num_frames)
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(load_one, v): v for v in todo}
 
-        if frames is None:
-            failed += 1
-            print(f"  [{i+1:5d}/{len(todo)}]  {video_path.name:>40}  ❌ failed")
-            continue
+        for i, future in enumerate(as_completed(futures)):
+            video_path, frames = future.result()
 
-        try:
-            tensor = preprocess_frames(frames, device)  # (1, C, T, H, W)
-            batch_paths.append(video_path)
-            batch_tensors.append(tensor)
-        except Exception as e:
-            failed += 1
-            print(f"  [{i+1:5d}/{len(todo)}]  {video_path.name:>40}  ❌ {e}")
-            continue
+            if frames is None:
+                failed += 1
+                continue
 
-        # Flush when batch is full
-        if len(batch_tensors) >= args.batch_size:
-            flush_batch()
+            try:
+                tensor = preprocess_frames(frames, device)
+                batch_paths.append(video_path)
+                batch_tensors.append(tensor)
+            except Exception as e:
+                failed += 1
+                print(f"  ⚠️  Preprocess failed {video_path.name}: {e}")
+                continue
 
-        # Progress every 50 videos
-        if (i + 1) % 50 == 0:
-            elapsed = time.time() - t0
-            rate    = done / elapsed if elapsed > 0 else 0
-            eta     = (len(todo) - done) / rate if rate > 0 else 0
-            print(f"  [{i+1:5d}/{len(todo)}]  done={done}  failed={failed}  "
-                  f"rate={rate:.1f} vid/s  ETA={eta/60:.1f}min")
+            if len(batch_tensors) >= args.batch_size:
+                flush_batch()
+
+            if (i + 1) % 100 == 0:
+                elapsed = time.time() - t0
+                rate    = (i + 1) / elapsed if elapsed > 0 else 0
+                eta     = (len(todo) - i - 1) / rate if rate > 0 else 0
+                print(f"  [{i+1:5d}/{len(todo)}]  done={done}  failed={failed}  "
+                      f"rate={rate:.1f} vid/s  ETA={eta/60:.1f}min")
 
     # Flush remaining
     flush_batch()
