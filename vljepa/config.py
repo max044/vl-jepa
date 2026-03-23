@@ -36,7 +36,7 @@ class Config:
     # ── Training ─────────────────────────────────────────────────────────
     batch_size: int = 64
     grad_accumulation: int = 1
-    lr: float = 3e-4
+    lr: float = 1e-4
     weight_decay: float = 0.05
     epochs: int = 20
     warmup_steps: int = 500
