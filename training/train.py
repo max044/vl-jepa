@@ -89,8 +89,7 @@ def run_validation(model, loader, config):
     return total_loss / batches, total_infonce / batches
 
 
-def save_checkpoint(model, optimizer, epoch, step, val_loss, config, path,
-                    is_best=False, best_val_loss=None):
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, epoch: int, step: int, val_loss: float, config: Config, path: Path, is_best: bool = False, best_val_loss: float | None = None):
     CHECKPOINT_DIR.mkdir(exist_ok=True)
     tmp = Path(path).with_suffix(".tmp")
     try:
@@ -111,30 +110,66 @@ def save_checkpoint(model, optimizer, epoch, step, val_loss, config, path,
         print(f"  ⚠️  Failed to save checkpoint: {e}")
 
 
-def log_checkpoint_to_wandb(path, name, epoch, val_loss, description=""):
+def log_checkpoint_to_wandb(path: Path, name: str, epoch: int, val_loss: float, description: str = ""):
     if not (USE_WANDB and HAS_WANDB and wandb.run):
         return
     artifact = wandb.Artifact(
-        name=f"{name}-{wandb.run.id}",
+        name=f"model-{wandb.run.id}",
         type="model",
         description=description or f"Checkpoint epoch {epoch} val_loss={val_loss:.4f}",
     )
     artifact.add_file(str(path), name=Path(path).name)
-    wandb.log_artifact(artifact)
+    wandb.run.log_artifact(artifact_or_path=artifact, aliases=["latest", f"{name}", f"epoch_{epoch}"])
 
 
 def handle_validation_result(avg_val_loss, model, optimizer, epoch, step, config, state):
+    state["last_val_loss"] = avg_val_loss
     improved = avg_val_loss < state["best_val_loss"]
     if improved:
         state["best_val_loss"]     = avg_val_loss
         state["best_epoch"]        = epoch
         state["epochs_no_improve"] = 0
-        save_checkpoint(model, optimizer, epoch, step, avg_val_loss, config,
-                        BEST_CHECKPOINT, is_best=True)
-        log_checkpoint_to_wandb(BEST_CHECKPOINT, "best", epoch, avg_val_loss,
-                                 description=f"Best model epoch {epoch}")
-        if USE_WANDB and HAS_WANDB and wandb.run:
-            wandb.run.summary.update({"best_epoch": epoch, "best_val_loss": avg_val_loss})
+
+        save_checkpoint(
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch,
+            step=step,
+            val_loss=avg_val_loss,
+            config=config,
+            path=BEST_CHECKPOINT,
+            is_best=True,
+            best_val_loss=state["best_val_loss"]
+        )
+    
+
+    save_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        epoch=epoch,
+        step=step,
+        val_loss=avg_val_loss,
+        config=config,
+        path=LAST_CHECKPOINT,
+        is_best=False,
+        best_val_loss=state["best_val_loss"]
+    )
+
+    log_checkpoint_to_wandb(
+        path=LAST_CHECKPOINT,
+        name="" if not improved else f"best",
+        epoch=epoch,
+        val_loss=avg_val_loss,
+        description=f"Checkpoint epoch {epoch}"
+    )
+
+    if USE_WANDB and HAS_WANDB and wandb.run:
+        wandb.run.summary.update({
+            "best_epoch": epoch if improved else state["best_epoch"],
+            "best_val_loss": state["best_val_loss"],
+        })
+
+    if improved:
         return False, True
 
     state["epochs_no_improve"] += 1
@@ -342,12 +377,7 @@ print(f"Training (early_stopping_patience={config.early_stopping_patience})\n")
 # Training loop
 # ---------------------------------------------------------------------------
 
-# Exclude 1.0 — end-of-epoch handles the final validation
-val_checkpoints = [
-    config.val_frequency * (i + 1)
-    for i in range(int(1 / config.val_frequency))
-    if config.val_frequency * (i + 1) < 1.0
-]
+val_checkpoints = [config.val_frequency * (i + 1) for i in range(int(1 / config.val_frequency))]
 
 for epoch in range(start_epoch, config.epochs):
     if torch.cuda.is_available():
@@ -399,7 +429,7 @@ for epoch in range(start_epoch, config.epochs):
                 "train/loss":    train_loss,
                 "train/infonce": loss_dict["loss/infonce"],
                 "train/lr":      optimizer.param_groups[0]["lr"],
-                "train/epoch":   epoch + batch_idx / len(train_loader),
+                "train/epoch":   epoch + 1,
             })
 
         ema_beta = 0.9
@@ -410,7 +440,7 @@ for epoch in range(start_epoch, config.epochs):
               f"batch: {batch_idx+1}/{len(train_loader)}    ",
               end="", flush=True)
 
-        # Intermediate validation (never at 100%)
+        # validation
         for val_pct in val_checkpoints:
             if batch_idx != int(len(train_loader) * val_pct) - 1:
                 continue
@@ -422,9 +452,10 @@ for epoch in range(start_epoch, config.epochs):
             print(f"  → Val loss: {avg_val_loss:.4f} (best: {state['best_val_loss']:.4f})")
 
             if USE_WANDB and HAS_WANDB and wandb.run:
-                wandb.log({"global_step": step, "val/loss": avg_val_loss,
-                           "val/best": state["best_val_loss"],
-                           "epoch": epoch + val_pct})
+                wandb.log({"global_step": step,
+                           "val/loss": avg_val_loss,
+                           "val/best": state["best_val_loss"]}
+                )
 
             early_stop, improved = handle_validation_result(
                 avg_val_loss, model, optimizer, epoch + 1, step, config, state)
@@ -453,64 +484,22 @@ for epoch in range(start_epoch, config.epochs):
         torch.cuda.synchronize()
     total_training_time += time.time() - t0
 
-    # End-of-epoch validation — always once per epoch
-    cleanup_wandb_cache()
-    avg_val_loss, _ = run_validation(model, val_loader, config)
-    epoch_last_val_loss = avg_val_loss
-    print(f"\n  → Val loss: {avg_val_loss:.4f} (best: {state['best_val_loss']:.4f})")
-
-    if USE_WANDB and HAS_WANDB and wandb.run:
-        wandb.log({"global_step": step, "val/loss": avg_val_loss,
-                   "val/best": state["best_val_loss"], "epoch": epoch + 1})
-
-    early_stop, improved = handle_validation_result(
-        avg_val_loss, model, optimizer, epoch + 1, step, config, state)
-
-    if improved:
-        print(f"  ✅ Amélioration: nouveau best = {state['best_val_loss']:.4f}")
-    else:
-        print(f"  ⚠️   No improvement "
-              f"({state['epochs_no_improve']}/{config.early_stopping_patience})")
-
-    if early_stop:
-        print(f"\n🛑 Early stopping! Best epoch: {state['best_epoch']} "
-              f"(val_loss: {state['best_val_loss']:.4f})")
-        break
-
-    # Save last + upload
-    save_checkpoint(model, optimizer, epoch + 1, step,
-                    epoch_last_val_loss, config, LAST_CHECKPOINT,
-                    best_val_loss=state["best_val_loss"])
-    log_checkpoint_to_wandb(LAST_CHECKPOINT, "last", epoch + 1,
-                             epoch_last_val_loss,
-                             description=f"Last checkpoint epoch {epoch+1}")
-
 # ---------------------------------------------------------------------------
-# Final validation & summary
+# Final summary
 # ---------------------------------------------------------------------------
 
 print()
-final_val_loss, final_val_infonce = run_validation(model, val_loader, config)
-
-if USE_WANDB and HAS_WANDB and wandb.run:
-    wandb.log({"global_step": step,
-               "final/val_loss":    final_val_loss,
-               "final/val_infonce": final_val_infonce})
-
-if final_val_loss < state["best_val_loss"]:
-    state["best_val_loss"] = final_val_loss
 
 peak_vram = torch.cuda.max_memory_allocated() / 1024 / 1024 if torch.cuda.is_available() else 0
 t_end = time.time()
 
 print("---")
-print(f"FINAL VALIDATION:  val_loss={final_val_loss:.6f}  best={state['best_val_loss']:.6f}")
 print(f"TRAINING INFO:     steps={step}  epochs={config.epochs}  "
       f"time={total_training_time:.0f}s  vram={peak_vram:.0f}MB")
 
 if USE_WANDB and HAS_WANDB and wandb.run:
     wandb.run.summary.update({
-        "final/val_loss":      final_val_loss,
+        "final/val_loss":      state["last_val_loss"],
         "final/best_val_loss": state["best_val_loss"],
         "final/training_time": total_training_time,
         "final/total_time":    t_end - t_start,

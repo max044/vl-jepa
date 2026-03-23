@@ -243,7 +243,7 @@ def main():
             # 5. Encode ground-truth captions and compute similarities
             captions  = [s["caption"] for s in group]
             sy_refs   = F.normalize(model.encode_text(captions, device=config.device), dim=-1)  # (N_queries, embed_dim)
-            sims      = (sy_hat_full @ sy_refs.T).cpu().numpy()  # (N_proposals, N_queries)
+            sims      = (sy_hat_full @ sy_refs.T).cpu().float().numpy()  # (N_proposals, N_queries)
 
             # 6. Score each query, apply NMS, compute IoU
             for q_idx, sample in enumerate(group):
