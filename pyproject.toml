@@ -23,6 +23,7 @@ dependencies = [
     "huggingface-hub>=1.4.1",
     "python-dotenv>=1.2.2",
     "vastai>=0.2.8",
+    "decord>=0.6.0",
 ]
 
 [build-system]

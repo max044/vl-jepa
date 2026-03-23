@@ -10,37 +10,22 @@ def load_video_frames(
     end_sec: float | None = None,
     num_frames: int = 16,
 ) -> list[np.ndarray] | None:
-    """Load a fixed number of frames from a temporal segment of a video.
+    try:
+        from decord import VideoReader, cpu
+        vr    = VideoReader(video_path, ctx=cpu(0))
+        fps   = vr.get_avg_fps()
+        total = len(vr)
 
-    Returns a list of RGB numpy arrays (H, W, 3), or None on failure.
-    Used by CharadesSTADataset during training.
-    """
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
+        start_frame = max(0, int(start_sec * fps))
+        end_frame   = min(total - 1, int(end_sec * fps) if end_sec is not None else total - 1)
+        if end_frame <= start_frame:
+            return None
+
+        indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
+        frames  = vr.get_batch(indices).asnumpy()  # (T, H, W, 3) — une seule op
+        return list(frames)
+    except Exception:
         return None
-
-    fps          = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if fps <= 0:
-        cap.release()
-        return None
-
-    start_frame = max(0, int(start_sec * fps))
-    end_frame   = min(total_frames - 1, int(end_sec * fps) if end_sec is not None else total_frames - 1)
-    if end_frame <= start_frame:
-        cap.release()
-        return None
-
-    indices = np.linspace(start_frame, end_frame, num_frames, dtype=int)
-    frames  = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-        ret, frame = cap.read()
-        if ret:
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
-    cap.release()
-    return frames if frames else None
 
 
 def load_video_to_ram(video_path: str) -> dict | None:
